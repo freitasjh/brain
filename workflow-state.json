@@ -1,0 +1,38 @@
+{
+  "project": "brain",
+  "description": "MCP server Python — cérebro para agentes de IA com Obsidian + Ollama + SQLite vector DB",
+  "phase": "implementation",
+  "status": "sqlite-vector-migration-complete",
+  "spec_name": "brain-mcp-server",
+  "phases_completed": [
+    "core-implementation",
+    "code-review-fixes",
+    "post-launch-expansions",
+    "cli-professionalization",
+    "global-setup",
+    "ide-integration",
+    "scope-feature",
+    "sqlite-vector-store"
+  ],
+  "tasks_completed": [
+    "CORE: MCP server, vault, embeddings, index, tools, tests (42)",
+    "CR: 5 code review fixes",
+    "EXP: hooks, per-tool skills, viewer, benchmark, consistency rules",
+    "CLI: typer+rich, init mcp/project, server start/stop/status, config show/set",
+    "SETUP: global config for opencode/copilot/kiro/zsh/systemd",
+    "IDE-01: brain watch daemon (watchdog + polling)",
+    "IDE-02: brain context command (auto-detect project context)",
+    "IDE-03: Zsh plugin v2 (chpwd hook, kiro/oc/copilot wrappers)",
+    "IDE-04: Auto-capture (#brain tag em comandos)",
+    "IDE-05: Auto-inject de contexto em comandos de IA (kiro, oc)",
+    "SCOPE-01: Core - models, vault manager, index, tools (brain_store, brain_read, brain_search, brain_reindex)",
+    "SCOPE-02: Integração - CLI, hooks, brain_read tool",
+    "SCOPE-03: Documentação - AGENTS.md, SKILL.md, BRAIN.MCP.md, kiro-steering, copilot-instructions",
+    "SQLITE-01: Substituir JSON por SQLite + sqlite-vec como backend do VectorIndex",
+    "SQLITE-02: Migração automática de index.json → index.db na inicialização",
+    "SQLITE-03: Atualizar testes e documentação"
+  ],
+  "test_count": 77,
+  "test_pass": 77,
+  "last_updated": "2026-07-26"
+}

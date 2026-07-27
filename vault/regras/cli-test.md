@@ -1,0 +1,1 @@
+## Regra via CLI\nNunca usar SELECT *.

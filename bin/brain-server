@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# brain-server — Inicia o Brain MCP Server centralizado em modo SSE.
+#
+# Uso:
+#   ./bin/brain-server                    # Inicia com config padrão
+#   ./bin/brain-server --port 9000        # Porta customizada
+#   ./bin/brain-server --vault ~/meu-vault  # Vault específico
+#   ./bin/brain-server --daemon           # Background (nohup)
+#   ./bin/brain-server --status           # Verificar se está rodando
+#   ./bin/brain-server --stop             # Parar servidor
+#
+# Variáveis de ambiente (sobrescrevem as flags):
+#   BRAIN_PORT         (default: 8321)
+#   BRAIN_VAULT_PATH   (default: ./vault)
+#   BRAIN_OLLAMA_URL   (default: http://localhost:11434)
+#   BRAIN_LOG_LEVEL    (default: INFO)
+# ===========================================================================
+set -euo pipefail
+
+BRAIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PID_FILE="${BRAIN_DIR}/data/brain-server.pid"
+LOG_FILE="${BRAIN_DIR}/data/brain-server.log"
+
+# ---------- defaults ----------
+PORT="${BRAIN_PORT:-8321}"
+VAULT="${BRAIN_VAULT_PATH:-${BRAIN_DIR}/vault}"
+OLLAMA="${BRAIN_OLLAMA_URL:-http://localhost:11434}"
+LOG_LEVEL="${BRAIN_LOG_LEVEL:-INFO}"
+DAEMON=false
+
+# ---------- parse flags ----------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port)     PORT="$2";     shift 2 ;;
+    --vault)    VAULT="$2";    shift 2 ;;
+    --ollama)   OLLAMA="$2";   shift 2 ;;
+    --log-level) LOG_LEVEL="$2"; shift 2 ;;
+    --daemon|-d) DAEMON=true;  shift ;;
+    --status)   shift
+      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "🧠 Brain server RUNNING (PID: $(cat "$PID_FILE"))"
+        echo "   Port:    $(sed -n 's/.*BRAIN_PORT=//p' /proc/$(cat "$PID_FILE")/environ 2>/dev/null || echo $PORT)"
+        echo "   Vault:   $VAULT"
+        echo "   Ollama:  $OLLAMA"
+        echo "   PID: $(cat "$PID_FILE")"
+      else
+        echo "🧠 Brain server NOT running"
+        exit 1
+      fi
+      exit 0
+      ;;
+    --stop)     shift
+      if [ -f "$PID_FILE" ]; then
+        echo "🛑 Stopping brain server (PID: $(cat "$PID_FILE"))..."
+        kill "$(cat "$PID_FILE")" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        echo "✅ Stopped"
+      else
+        echo "🧠 Brain server not running"
+      fi
+      exit 0
+      ;;
+    --help|-h)
+      sed -n '3,12p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "❌ Unknown option: $1"
+      echo "Use --help para ver as opções"
+      exit 1
+      ;;
+  esac
+done
+
+# ---------- pre-flight checks ----------
+
+# 1. Verificar Python
+if ! command -v uv &>/dev/null; then
+  echo "❌ 'uv' não encontrado. Instale com: curl -LsSf https://astral.sh/uv/install.sh | sh"
+  exit 1
+fi
+
+# 2. Verificar se o diretório do brain existe
+if [ ! -f "${BRAIN_DIR}/pyproject.toml" ]; then
+  echo "❌ pyproject.toml não encontrado em $BRAIN_DIR"
+  echo "   Execute este script da raiz do repositório brain ou ajuste BRAIN_DIR"
+  exit 1
+fi
+
+# 3. Verificar Ollama (best-effort, apenas warning)
+if command -v curl &>/dev/null; then
+  if ! curl -s -f "$OLLAMA/api/tags" >/dev/null 2>&1; then
+    echo "⚠️  Ollama não respondendo em $OLLAMA"
+    echo "   O servidor vai iniciar em modo degradado (sem embeddings)"
+    echo "   Para corrigir: certifique-se que 'ollama serve' está rodando"
+    echo ""
+  fi
+fi
+
+# 4. Verificar/Garantir diretório data
+mkdir -p "${BRAIN_DIR}/data"
+
+# ---------- start ----------
+
+export BRAIN_TRANSPORT="sse"
+export BRAIN_PORT="$PORT"
+export BRAIN_VAULT_PATH="$VAULT"
+export BRAIN_OLLAMA_URL="$OLLAMA"
+export BRAIN_LOG_LEVEL="$LOG_LEVEL"
+
+# Ensure absolute path for vault
+VAULT="$(cd "$VAULT" 2>/dev/null && pwd)" || true
+
+echo "🧠 Iniciando Brain MCP Server..."
+echo "   Repositório:  $BRAIN_DIR"
+echo "   Transporte:   SSE"
+echo "   Porta:        $PORT"
+echo "   Vault:        $VAULT"
+echo "   Ollama:       $OLLAMA"
+echo "   Log level:    $LOG_LEVEL"
+echo ""
+
+# Criar estrutura inicial do vault se não existir
+for layer in arquitetura regras sessoes projetos indexacao; do
+  mkdir -p "${VAULT}/${layer}"
+done
+
+if [ "$DAEMON" = true ]; then
+  echo "🔹 Modo daemon (background)..."
+  echo "   Log: $LOG_FILE"
+  echo "   PID: $PID_FILE"
+  echo ""
+  nohup env BRAIN_TRANSPORT=sse BRAIN_PORT="$PORT" \
+    BRAIN_VAULT_PATH="$VAULT" \
+    BRAIN_OLLAMA_URL="$OLLAMA" \
+    BRAIN_LOG_LEVEL="$LOG_LEVEL" \
+    uv run --directory "$BRAIN_DIR" python -m brain_server \
+    >> "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+  sleep 2
+  echo "✅ Servidor iniciado (PID: $(cat "$PID_FILE"))"
+  echo "   Conecte seus projetos em: http://localhost:${PORT}/sse"
+else
+  echo "🔹 Modo foreground (Ctrl+C para parar)"
+  echo ""
+  exec env BRAIN_TRANSPORT=sse BRAIN_PORT="$PORT" \
+    BRAIN_VAULT_PATH="$VAULT" \
+    BRAIN_OLLAMA_URL="$OLLAMA" \
+    BRAIN_LOG_LEVEL="$LOG_LEVEL" \
+    uv run --directory "$BRAIN_DIR" python -m brain_server
+fi

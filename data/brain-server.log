@@ -1,0 +1,208 @@
+INFO  brain_server.server  Brain MCP server starting — vault=. ollama=http://localhost:11434 transport=sse
+INFO  brain_server.index.store  Loaded index with 291 entries
+INFO  brain_server.server  Server initialized — vault=. index=291 entries
+INFO:     Started server process [14005]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8321 (Press CTRL+C to quit)
+INFO:     127.0.0.1:42392 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42402 - "POST /messages/?session_id=952ef2d9d75b4321adb5359cd8dc1cb1 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:42402 - "POST /messages/?session_id=952ef2d9d75b4321adb5359cd8dc1cb1 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:42402 - "POST /messages/?session_id=952ef2d9d75b4321adb5359cd8dc1cb1 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:42402 - "POST /messages/?session_id=952ef2d9d75b4321adb5359cd8dc1cb1 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:35184 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:35184 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:35198 - "POST /messages/?session_id=66c6f1e00cc047a8980977d86758c343 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:37014 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:37014 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:37016 - "POST /messages/?session_id=0d9159d7f89a43598e03414041d8beea HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:35670 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:35670 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35684 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35684 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35684 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:35684 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:35684 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:35698 - "POST /messages/?session_id=d1af3226b8564ade963884d924675141 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:51946 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:51946 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:51958 - "POST /messages/?session_id=06d8c1ee4618400097227c5004333d37 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:59432 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59432 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59444 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:59444 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:59446 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:59446 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:59446 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:59446 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:37872 - "POST /messages/?session_id=781c587d51014b79bfe13f3b11818fe2 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50166 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50178 - "POST /messages/?session_id=39858484305e48468e422d461d4ccce6 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:50178 - "POST /messages/?session_id=39858484305e48468e422d461d4ccce6 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:50178 - "POST /messages/?session_id=39858484305e48468e422d461d4ccce6 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO:     127.0.0.1:50178 - "POST /messages/?session_id=39858484305e48468e422d461d4ccce6 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:50026 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50034 - "POST /messages/?session_id=26ba01f5bd3d440a97111c78748c14b0 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:50034 - "POST /messages/?session_id=26ba01f5bd3d440a97111c78748c14b0 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:50034 - "POST /messages/?session_id=26ba01f5bd3d440a97111c78748c14b0 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50034 - "POST /messages/?session_id=26ba01f5bd3d440a97111c78748c14b0 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:53836 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53836 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:53838 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:59150 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59150 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59152 - "POST /messages/?session_id=5bab21a7f649414090c92fccefac9da9 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:59162 - "POST /messages/?session_id=5bab21a7f649414090c92fccefac9da9 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:59168 - "POST /messages/?session_id=5bab21a7f649414090c92fccefac9da9 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:59184 - "POST /messages/?session_id=5bab21a7f649414090c92fccefac9da9 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:59186 - "POST /messages/?session_id=5bab21a7f649414090c92fccefac9da9 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:39448 - "POST /messages/?session_id=9704252795ca40e6bb0b567d7469377d HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO:     127.0.0.1:56526 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56540 - "POST /messages/?session_id=2a1a1ebd2ac04c028d470f7949107501 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:56540 - "POST /messages/?session_id=2a1a1ebd2ac04c028d470f7949107501 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:56540 - "POST /messages/?session_id=2a1a1ebd2ac04c028d470f7949107501 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO:     127.0.0.1:56540 - "POST /messages/?session_id=2a1a1ebd2ac04c028d470f7949107501 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:35140 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:35140 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:35152 - "POST /messages/?session_id=a6f172ca8cd341a68f477b2587f2a494 HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:43600 - "POST /sse HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:43600 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListToolsRequest
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourcesRequest
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListResourceTemplatesRequest
+INFO:     127.0.0.1:43606 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type ListPromptsRequest
+INFO:     127.0.0.1:38360 - "POST /messages/?session_id=fe720fb3604d4593b6a89093f07e97db HTTP/1.1" 202 Accepted
+INFO  mcp.server.lowlevel.server  Processing request of type CallToolRequest
+INFO  brain_server.vault.manager  Wrote note: regras/fluig/form-version-diff-security-gap.md
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  httpx  HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+INFO  brain_server.tools.brain_store  Indexed 'regras/fluig/form-version-diff-security-gap.md' — 8 chunks
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/uvicorn/protocols/http/h11_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/routing.py", line 64, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/routing.py", line 62, in app
+    await response(scope, receive, send)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/responses.py", line 166, in __call__
+    await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 39, in sender
+    await send(message)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/_exception_handler.py", line 39, in sender
+    await send(message)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/starlette/middleware/errors.py", line 161, in _send
+    await send(message)
+  File "/home/joao.hfreitas@jv01.local/Documentos/wsProjetos/brain/.venv/lib/python3.10/site-packages/uvicorn/protocols/http/h11_impl.py", line 500, in send
+    raise RuntimeError(f"Expected ASGI message 'http.response.body', but got '{message['type']}'.")
+RuntimeError: Expected ASGI message 'http.response.body', but got 'http.response.start'.
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [14005]

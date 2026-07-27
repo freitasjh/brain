@@ -1,0 +1,40 @@
+[project]
+name = "brain-server"
+version = "0.2.0"
+description = "MCP server — cérebro para agentes de IA com Obsidian + Ollama + SQLite vector"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.28.1",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.0",
+    "sqlite-vec>=0.1.0",
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+    "watchdog>=6.0.0",
+]
+
+[project.scripts]
+brain-server = "brain_server.__main__:main"
+brain = "brain_server.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["brain_server"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
+]

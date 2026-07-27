@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    ".agents/rules/*.md"
+  ],
+  "agent": {
+    "code-reviewer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agent/fullstack-code-reviewer/AGENT.md}",
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": true
+      }
+    },
+    "qa-engineer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agent/qa-engineer/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": false,
+        "bash": true
+      }
+    },
+      "developer-engineer": {
+        "mode": "primary",
+        "prompt": "{file:./.agents/agent/developer-engineer/AGENT.md}",
+        "tools": {
+          "write": true,
+          "edit": true,
+          "bash": true
+        }
+      }
+   }
+}
