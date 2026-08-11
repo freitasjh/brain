@@ -1,8 +1,8 @@
 {
   "project": "brain",
-  "description": "MCP server Python — cérebro para agentes de IA com Obsidian + Ollama + SQLite vector DB",
+  "description": "MCP server Python — cérebro para agentes de IA com Obsidian + Ollama + SQLite vector DB + Projetos",
   "phase": "implementation",
-  "status": "sqlite-vector-migration-complete",
+  "status": "projects-feature-complete",
   "spec_name": "brain-mcp-server",
   "phases_completed": [
     "core-implementation",
@@ -12,7 +12,8 @@
     "global-setup",
     "ide-integration",
     "scope-feature",
-    "sqlite-vector-store"
+    "sqlite-vector-store",
+    "projects-feature"
   ],
   "tasks_completed": [
     "CORE: MCP server, vault, embeddings, index, tools, tests (42)",
@@ -30,9 +31,14 @@
     "SCOPE-03: Documentação - AGENTS.md, SKILL.md, BRAIN.MCP.md, kiro-steering, copilot-instructions",
     "SQLITE-01: Substituir JSON por SQLite + sqlite-vec como backend do VectorIndex",
     "SQLITE-02: Migração automática de index.json → index.db na inicialização",
-    "SQLITE-03: Atualizar testes e documentação"
+    "SQLITE-03: Atualizar testes e documentação",
+    "PROJECT-01: Tabela projects + project_id/tags em chunks + note_projects",
+    "PROJECT-02: Tools brain_project_create/list/notes/link/unlink/delete",
+    "PROJECT-03: Busca com filtro project e tag",
+    "PROJECT-04: Testes para projeto (18 novos)",
+    "FRONTMATTER-01: Auto-geração de YAML frontmatter no vault (project, tags, scope)"
   ],
-  "test_count": 77,
-  "test_pass": 77,
+  "test_count": 100,
+  "test_pass": 100,
   "last_updated": "2026-07-26"
 }

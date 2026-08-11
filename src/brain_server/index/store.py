@@ -1,15 +1,10 @@
-"""VectorIndex — SQLite vector store backed by sqlite-vec for fast similarity search.
+"""VectorIndex — SQLite vector store backed by sqlite-vec.
 
-Replaces the previous JSON-based in-memory store with a proper SQLite database
-using the sqlite-vec extension for vector similarity search (cosine distance).
-
-Benefits over JSON:
-  - O(log n) index lookups vs O(n) full scan
-  - No need to load everything into RAM
-  - SQL queries for complex filtering
-  - Transactions for atomic writes
-  - Scales to millions of vectors
-  - Can be queried externally with any SQLite client
+Schema v3 adds:
+  - projects: registry of projects (id, name, description)
+  - project_id on chunks: which project OWNS this note
+  - tags on chunks: JSON array for categorization (from frontmatter)
+  - note_projects: many-to-many linking global notes to projects that use them
 """
 
 from __future__ import annotations
@@ -24,7 +19,7 @@ from typing import Any
 import sqlite3
 import sqlite_vec
 
-from brain_server.index.models import IndexEntry, SearchResult
+from brain_server.index.models import IndexEntry, NoteLink, Project, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +29,34 @@ def vec_to_blob(vector: list[float]) -> bytes:
     return array.array("f", vector).tobytes()
 
 
-def blob_to_vec(blob: bytes) -> list[float]:
-    """Convert a float32 BLOB back to a list of floats."""
-    return list(array.array("f", blob))
+def _tags_to_json(tags: list[str] | None) -> str | None:
+    """Serialize tags list to JSON string."""
+    return json.dumps(tags) if tags else None
+
+
+def _json_to_tags(raw: str | None) -> list[str]:
+    """Deserialize JSON string to tags list."""
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 class VectorIndex:
     """SQLite-based vector index using sqlite-vec for fast similarity search.
 
-    Uses two tables:
-      - chunks: metadata (path, layer, scope, snippet, timestamps)
-      - vec_chunks: virtual vec0 table (id, embedding) for vector search
+    Schema v3:
+      - chunks: metadata (path, layer, scope, snippet, project_id, tags)
+      - vec_chunks: virtual vec0 table for vector search
+      - projects: project registry
+      - note_projects: many-to-many (global notes ↔ projects)
     """
 
-    VERSION = 2
-    EMBEDDING_DIM = 768  # nomic-embed-text produces 768D vectors
+    VERSION = 3
+    EMBEDDING_DIM = 768
     _conn: sqlite3.Connection | None = None
 
     def __init__(self, index_path: Path, embed_dim: int | None = None) -> None:
@@ -61,31 +69,38 @@ class VectorIndex:
     # ------------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
-        """Lazy-connect to SQLite database and initialize schema."""
         if self._conn is not None:
             return self._conn
 
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.index_path))
 
-        # Load sqlite-vec extension
         self._conn.enable_load_extension(True)
         sqlite_vec.load(self._conn)
         self._conn.enable_load_extension(False)
 
-        # Performance pragmas
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA synchronous=NORMAL")
 
         self._init_schema()
+        self._migrate_v2_to_v3()
         return self._conn
 
     def _init_schema(self) -> None:
-        """Create tables and indexes if they don't exist."""
         conn = self._conn
         assert conn is not None
 
         conn.executescript(f"""
+            -- Projects registry
+            CREATE TABLE IF NOT EXISTS projects (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                description TEXT DEFAULT '',
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Note chunks (without project_id/tags yet — added by migration if needed)
             CREATE TABLE IF NOT EXISTS chunks (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 path        TEXT NOT NULL,
@@ -102,11 +117,23 @@ class VectorIndex:
             CREATE INDEX IF NOT EXISTS idx_chunks_scope ON chunks(scope);
             CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 
+            -- Many-to-many: global notes ↔ projects that use them
+            CREATE TABLE IF NOT EXISTS note_projects (
+                note_path   TEXT NOT NULL,
+                project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                created_at  TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (note_path, project_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_projects_path ON note_projects(note_path);
+            CREATE INDEX IF NOT EXISTS idx_note_projects_proj ON note_projects(project_id);
+
+            -- Vector search (virtual table)
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 id        INTEGER PRIMARY KEY,
                 embedding FLOAT[{self.embed_dim}]
             );
 
+            -- Metadata
             CREATE TABLE IF NOT EXISTS _meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -117,9 +144,36 @@ class VectorIndex:
         """)
         conn.commit()
 
+        # Run migration AFTER base schema is created
+        self._migrate_v2_to_v3()
+
+        # Add indexes for new columns (safe to run even if they exist)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tags ON chunks(tags)")
+        except Exception:
+            pass  # Columns may not exist yet on old DBs
+
+    def _migrate_v2_to_v3(self) -> None:
+        """Add project_id, tags columns if upgrading from v2 schema."""
+        conn = self._conn
+        assert conn is not None
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+
+        if "project_id" not in cols:
+            conn.execute("ALTER TABLE chunks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+            logger.info("Migrated: added chunks.project_id")
+
+        if "tags" not in cols:
+            conn.execute("ALTER TABLE chunks ADD COLUMN tags TEXT DEFAULT NULL")
+            logger.info("Migrated: added chunks.tags")
+
+        conn.execute("UPDATE _meta SET value = ? WHERE key = 'version'", [str(self.VERSION)])
+        conn.commit()
+
     @property
     def reindexing(self) -> bool:
-        """Check if a reindex operation is in progress."""
         return self._reindex_lock.locked()
 
     # ------------------------------------------------------------------
@@ -128,11 +182,6 @@ class VectorIndex:
 
     @classmethod
     def migrate_from_json(cls, json_path: Path, db_path: Path) -> VectorIndex | None:
-        """Migrate an existing JSON index to SQLite.
-
-        Reads the old JSON file, creates a new SQLite database, and imports
-        all entries. Returns the new VectorIndex, or None if there's nothing to migrate.
-        """
         if not json_path.exists():
             return None
 
@@ -140,8 +189,6 @@ class VectorIndex:
             raw = json.loads(json_path.read_text(encoding="utf-8"))
             entries_data = raw.get("entries", [])
             if not entries_data:
-                logger.info("JSON index is empty — nothing to migrate")
-                # Remove empty JSON so we don't try again
                 json_path.unlink(missing_ok=True)
                 return None
 
@@ -153,7 +200,6 @@ class VectorIndex:
                 embedding = e.get("embedding", [])
                 if not embedding:
                     continue
-
                 embed_blob = vec_to_blob(embedding)
                 cursor = conn.execute(
                     """INSERT INTO chunks(path, layer, scope, snippet, chunk_index, total_chunks)
@@ -161,23 +207,20 @@ class VectorIndex:
                     [e["path"], e["layer"], e.get("scope"),
                      e.get("snippet", "")[:200], e.get("chunk_index", 0), e.get("total_chunks", 1)],
                 )
-                chunk_id = cursor.lastrowid
                 conn.execute(
                     "INSERT INTO vec_chunks(id, embedding) VALUES (?, ?)",
-                    [chunk_id, embed_blob],
+                    [cursor.lastrowid, embed_blob],
                 )
 
             conn.commit()
             idx.save()
-
-            # Back up old JSON
             backup = json_path.with_suffix(".json.bak")
             json_path.rename(backup)
-            logger.info("Migration complete — old index backed up to %s", backup)
+            logger.info("Migration complete — backed up to %s", backup)
             return idx
 
         except Exception as exc:
-            logger.warning("Migration from JSON failed: %s — starting fresh", exc)
+            logger.warning("Migration from JSON failed: %s", exc)
             return None
 
     # ------------------------------------------------------------------
@@ -185,35 +228,160 @@ class VectorIndex:
     # ------------------------------------------------------------------
 
     def load(self) -> None:
-        """Connect to database and ensure schema.
-
-        If the database file doesn't exist, it will be created on first write.
-        Also checks for a legacy JSON index and migrates it automatically.
-        """
         if not self.index_path.exists():
-            # Check for JSON migration
             json_path = self.index_path.with_suffix(".json")
             if json_path.exists():
                 migrated = self.migrate_from_json(json_path, self.index_path)
                 if migrated is not None:
-                    # Copy the connection from migrated instance
                     self._conn = migrated._conn
-                    logger.info("Loaded migrated SQLite index with %d entries", self.size())
                     return
-
         self._connect()
-        logger.info("Loaded SQLite index from %s — %d entries", self.index_path, self.size())
 
     def save(self) -> None:
-        """Ensure data is flushed to disk via WAL checkpoint."""
         conn = self._connect()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        logger.debug("Saved index with %d entries", self.size())
 
     def size(self) -> int:
-        """Number of chunk entries in the index."""
         conn = self._connect()
         return conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # Projects CRUD
+    # ------------------------------------------------------------------
+
+    def project_create(self, name: str, description: str = "") -> Project:
+        """Register a new project. Raises ValueError if name already exists."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO projects(name, description) VALUES (?, ?)",
+                [name.strip(), description],
+            )
+            conn.commit()
+            logger.info("Created project '%s' (id=%d)", name, cursor.lastrowid)
+            return Project(id=cursor.lastrowid, name=name.strip(), description=description)
+        except sqlite3.IntegrityError:
+            raise ValueError(f"Project '{name}' already exists")
+
+    def project_get(self, name: str) -> Project | None:
+        """Get a project by name."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id, name, description, created_at FROM projects WHERE name = ?",
+            [name.strip()],
+        ).fetchone()
+        if not row:
+            return None
+        return Project(id=row[0], name=row[1], description=row[2], created_at=row[3])
+
+    def project_get_by_id(self, project_id: int) -> Project | None:
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id, name, description, created_at FROM projects WHERE id = ?",
+            [project_id],
+        ).fetchone()
+        if not row:
+            return None
+        return Project(id=row[0], name=row[1], description=row[2], created_at=row[3])
+
+    def project_list(self) -> list[Project]:
+        """List all registered projects."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, name, description, created_at FROM projects ORDER BY name"
+        ).fetchall()
+        return [Project(id=r[0], name=r[1], description=r[2], created_at=r[3]) for r in rows]
+
+    def project_delete(self, name: str) -> bool:
+        """Delete a project by name. Returns True if deleted."""
+        conn = self._connect()
+        cursor = conn.execute("DELETE FROM projects WHERE name = ?", [name.strip()])
+        conn.commit()
+        deleted = cursor.rowcount > 0
+        if deleted:
+            logger.info("Deleted project '%s'", name)
+        return deleted
+
+    def project_notes(self, project_name: str) -> list[dict]:
+        """Get all notes (chunks) belonging to a project, plus global notes linked to it.
+
+        Returns a list of dicts with: path, layer, scope, snippet, tags, source ('owned' | 'linked').
+        """
+        conn = self._connect()
+        project = self.project_get(project_name)
+        if not project:
+            return []
+
+        # 1. Notes owned by this project (scope='projetos', project_id matching)
+        owned = conn.execute("""
+            SELECT DISTINCT path, layer, scope, snippet, tags
+            FROM chunks WHERE project_id = ?
+            ORDER BY layer, path
+        """, [project.id]).fetchall()
+
+        results = [
+            {"path": r[0], "layer": r[1], "scope": r[2], "snippet": r[3],
+             "tags": _json_to_tags(r[4]), "source": "owned"}
+            for r in owned
+        ]
+
+        # 2. Global notes linked to this project
+        linked = conn.execute("""
+            SELECT DISTINCT c.path, c.layer, c.scope, c.snippet, c.tags
+            FROM note_projects np
+            JOIN chunks c ON c.path = np.note_path
+            WHERE np.project_id = ?
+            ORDER BY c.layer, c.path
+        """, [project.id]).fetchall()
+
+        results.extend([
+            {"path": r[0], "layer": r[1], "scope": r[2], "snippet": r[3],
+             "tags": _json_to_tags(r[4]), "source": "linked"}
+            for r in linked
+        ])
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Note ↔ Project linking
+    # ------------------------------------------------------------------
+
+    def note_link_project(self, note_path: str, project_name: str) -> None:
+        """Link a global note to a project (many-to-many)."""
+        conn = self._connect()
+        project = self.project_get(project_name)
+        if not project:
+            raise ValueError(f"Project '{project_name}' not found")
+        conn.execute(
+            "INSERT OR IGNORE INTO note_projects(note_path, project_id) VALUES (?, ?)",
+            [note_path, project.id],
+        )
+        conn.commit()
+
+    def note_unlink_project(self, note_path: str, project_name: str) -> bool:
+        """Remove link between a global note and a project."""
+        conn = self._connect()
+        project = self.project_get(project_name)
+        if not project:
+            return False
+        cursor = conn.execute(
+            "DELETE FROM note_projects WHERE note_path = ? AND project_id = ?",
+            [note_path, project.id],
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    def note_linked_projects(self, note_path: str) -> list[Project]:
+        """Get all projects linked to a specific note."""
+        conn = self._connect()
+        rows = conn.execute("""
+            SELECT p.id, p.name, p.description, p.created_at
+            FROM note_projects np
+            JOIN projects p ON p.id = np.project_id
+            WHERE np.note_path = ?
+            ORDER BY p.name
+        """, [note_path]).fetchall()
+        return [Project(id=r[0], name=r[1], description=r[2], created_at=r[3]) for r in rows]
 
     # ------------------------------------------------------------------
     # Mutations
@@ -228,40 +396,46 @@ class VectorIndex:
         chunk_index: int = 0,
         total_chunks: int = 1,
         scope: str | None = None,
+        project_id: int | None = None,
+        tags: list[str] | None = None,
     ) -> None:
-        """Add or update an entry. If path+chunk_index exists, replace it.
-
-        sqlite-vec's vec0 virtual table does NOT support INSERT OR REPLACE,
-        so we DELETE first, then INSERT.
-        """
+        """Add or update a chunk entry with embedding, project ownership, and tags."""
         conn = self._connect()
         embed_blob = vec_to_blob(embedding)
 
-        # Check if chunk already exists
         existing = conn.execute(
-            "SELECT id FROM chunks WHERE path = ? AND chunk_index = ?",
+            "SELECT id, project_id, tags FROM chunks WHERE path = ? AND chunk_index = ?",
             [path, chunk_index],
         ).fetchone()
 
+        # Bug 2 fix: preserve existing project_id/tags when not provided
         if existing:
             chunk_id = existing[0]
-            # Delete from vec0 first (foreign key-like constraint)
+            if project_id is None and existing[1] is not None:
+                project_id = existing[1]
+            if tags is None and existing[2] is not None:
+                tags = _json_to_tags(existing[2])
+
+        tags_json = _tags_to_json(tags)
+
+        if existing:
+            chunk_id = existing[0]
             conn.execute("DELETE FROM vec_chunks WHERE id = ?", [chunk_id])
             conn.execute(
                 """UPDATE chunks
-                   SET layer=?, scope=?, snippet=?, total_chunks=?
+                   SET layer=?, scope=?, snippet=?, total_chunks=?,
+                       project_id=?, tags=?
                    WHERE id=?""",
-                [layer, scope, snippet[:200], total_chunks, chunk_id],
+                [layer, scope, snippet[:200], total_chunks, project_id, tags_json, chunk_id],
             )
         else:
             cursor = conn.execute(
-                """INSERT INTO chunks(path, layer, scope, snippet, chunk_index, total_chunks)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                [path, layer, scope, snippet[:200], chunk_index, total_chunks],
+                """INSERT INTO chunks(path, layer, scope, snippet, chunk_index, total_chunks, project_id, tags)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [path, layer, scope, snippet[:200], chunk_index, total_chunks, project_id, tags_json],
             )
             chunk_id = cursor.lastrowid
 
-        # Insert into vec0
         conn.execute(
             "INSERT INTO vec_chunks(id, embedding) VALUES (?, ?)",
             [chunk_id, embed_blob],
@@ -269,33 +443,30 @@ class VectorIndex:
         conn.commit()
 
     def remove(self, path: str) -> None:
-        """Remove all entries for a given path."""
         conn = self._connect()
         ids = [
             row[0]
-            for row in conn.execute(
-                "SELECT id FROM chunks WHERE path = ?", [path]
-            ).fetchall()
+            for row in conn.execute("SELECT id FROM chunks WHERE path = ?", [path]).fetchall()
         ]
         for chunk_id in ids:
             conn.execute("DELETE FROM vec_chunks WHERE id = ?", [chunk_id])
         conn.execute("DELETE FROM chunks WHERE path = ?", [path])
-        removed = len(ids)
+        conn.execute("DELETE FROM note_projects WHERE note_path = ?", [path])
         conn.commit()
-        if removed:
-            logger.info("Removed %d entries for '%s'", removed, path)
+        if ids:
+            logger.info("Removed %d entries for '%s'", len(ids), path)
 
     def clear(self) -> None:
-        """Remove all entries by dropping and recreating tables."""
         conn = self._connect()
         conn.executescript("""
             DROP TABLE IF EXISTS vec_chunks;
             DROP TABLE IF EXISTS chunks;
+            DROP TABLE IF EXISTS note_projects;
+            DROP TABLE IF EXISTS projects;
             DROP TABLE IF EXISTS _meta;
         """)
         conn.commit()
         self._init_schema()
-        logger.info("Index cleared")
 
     # ------------------------------------------------------------------
     # Search
@@ -307,42 +478,62 @@ class VectorIndex:
         top_k: int = 5,
         layer_filter: str | None = None,
         scope_filter: str | None = None,
+        project_filter: str | None = None,
+        tag_filter: str | None = None,
     ) -> list[SearchResult]:
-        """Search by cosine similarity. Returns top_k results sorted by similarity (desc).
+        """Search by cosine similarity with optional filters for layer, scope, project, and tags.
 
-        Uses vec0's efficient kNN search, then joins with metadata table
-        for filtering and fetching snippet/content.
+        Args:
+            query_embedding: The query vector
+            top_k: Max results
+            layer_filter: Only return notes from this layer
+            scope_filter: Only return notes with this scope
+            project_filter: Only return notes belonging to this project name
+                            (includes both owned and linked global notes)
+            tag_filter: Only return notes whose tags contain this string
         """
         conn = self._connect()
         query_blob = vec_to_blob(query_embedding)
 
-        # Query vec0 for nearest neighbors (request more to compensate for filters)
-        search_k = min(top_k * 4, 200)  # cap at 200 to avoid excessive results
-        base_rows = conn.execute(
-            "SELECT id, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ?",
-            [query_blob, search_k],
-        ).fetchall()
+        search_k = min(top_k * 4, 200)
 
-        if not base_rows:
-            return []
-
-        # Build the join query with optional filters
-        sql = """
-            SELECT c.path, c.layer, c.scope, c.snippet, c.chunk_index, v.distance
-            FROM (SELECT id, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ?) v
-            JOIN chunks c ON c.id = v.id
-            WHERE 1=1
-        """
+        # Build WHERE clauses
+        where_clauses = ["1=1"]
         params: list[Any] = [query_blob, search_k]
 
         if layer_filter:
-            sql += " AND c.layer = ?"
+            where_clauses.append("c.layer = ?")
             params.append(layer_filter)
         if scope_filter:
-            sql += " AND c.scope = ?"
+            where_clauses.append("c.scope = ?")
             params.append(scope_filter)
+        if project_filter:
+            where_clauses.append("""
+                (c.project_id = (SELECT id FROM projects WHERE name = ?)
+                 OR c.path IN (
+                     SELECT np.note_path FROM note_projects np
+                     JOIN projects p ON p.id = np.project_id
+                     WHERE p.name = ?
+                 ))
+            """)
+            params.extend([project_filter, project_filter])
+        if tag_filter:
+            where_clauses.append("c.tags LIKE ?")
+            params.append(f"%{tag_filter}%")
 
-        sql += " ORDER BY v.distance ASC LIMIT ?"
+        where_sql = " AND ".join(where_clauses)
+
+        sql = f"""
+            SELECT c.path, c.layer, c.scope, c.snippet, c.chunk_index,
+                   v.distance, c.project_id, c.tags,
+                   p.name as project_name
+            FROM (SELECT id, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ?) v
+            JOIN chunks c ON c.id = v.id
+            LEFT JOIN projects p ON p.id = c.project_id
+            WHERE {where_sql}
+            ORDER BY v.distance ASC
+            LIMIT ?
+        """
         params.append(top_k)
 
         rows = conn.execute(sql, params).fetchall()
@@ -351,17 +542,20 @@ class VectorIndex:
             SearchResult(
                 path=row[0],
                 layer=row[1],
-                score=round(1.0 - row[5], 4),  # cosine_distance → similarity
+                score=round(1.0 - row[5], 4),
                 snippet=row[3] or "(snippet not available)",
                 chunk_index=row[4],
                 scope=row[2],
+                project_id=row[6],
+                project_name=row[8],
+                tags=_json_to_tags(row[7]),
             )
             for row in rows
         ]
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Standalone cosine similarity for testing (used by tests)."""
+    """Standalone cosine similarity for testing."""
     if len(a) != len(b):
         raise ValueError(f"Dimension mismatch: {len(a)} vs {len(b)}")
     import math

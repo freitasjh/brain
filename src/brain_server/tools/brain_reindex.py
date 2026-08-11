@@ -77,7 +77,12 @@ def register(
                     if "/" not in path:
                         return "INVALID_PARAMS: path must include layer, e.g. 'arquitetura/projeto-x'"
                     layer_name, rel_path = path.split("/", 1)
-                    note = vault.read(layer_name, rel_path)
+                    # Strip trailing .md to avoid double-extension (Bug 5)
+                    if rel_path.endswith(".md"):
+                        rel_path = rel_path[:-3]
+                    # Extract scope for layers that require it (Bug 3)
+                    scope = _extract_scope_from_path(layer_name, rel_path)
+                    note = vault.read(layer_name, rel_path, scope=scope)
                     return await _reindex_notes(vault, embeddings, index, [note])
 
         except ValueError as exc:
@@ -94,7 +99,11 @@ async def _reindex_files(
     index: VectorIndex,
     files: list,
 ) -> str:
-    """Reindex files from a list of Path objects."""
+    """Reindex files from a list of Path objects.
+
+    Computes all embeddings first, then swaps old↔new atomically per file.
+    Uses concurrent embedding for speed (Bug 4 fix).
+    """
     count = 0
     errors = 0
 
@@ -105,15 +114,18 @@ async def _reindex_files(
             rel = f.relative_to(vault.vault_path)
             layer = rel.parts[0]
             path_stem = str(rel.with_suffix(""))
-            
+
             # Extract scope if layer requires it
             scope = _extract_scope_from_path(layer, path_stem)
 
             chunks = embeddings.chunk_text(content)
-            embeddings_list = await embeddings.embed_batch(chunks)
+            embeddings_list = await embeddings.embed_batch_concurrent(chunks)
 
-            # Remove old entries for this path
-            full_vault_path = f"{layer}/{path_stem}.md"
+            # path_stem is already relative to vault root (e.g. "estudos/global/java/x")
+            # Do NOT prepend layer again — it's already the first segment (Bug 1 fix)
+            full_vault_path = f"{path_stem}.md"
+
+            # Atomic swap: compute embeddings BEFORE removing old entries
             index.remove(full_vault_path)
 
             for i, (chunk_text, vec) in enumerate(zip(chunks, embeddings_list)):
@@ -144,16 +156,22 @@ async def _reindex_notes(
     index: VectorIndex,
     notes: list,
 ) -> str:
-    """Reindex from a list of Note objects."""
+    """Reindex from a list of Note objects.
+
+    Computes all embeddings first, then swaps old↔new atomically per note.
+    Uses concurrent embedding for speed (Bug 4 fix).
+    """
     count = 0
     errors = 0
 
     for note in notes:
         try:
             chunks = embeddings.chunk_text(note.content)
-            embeddings_list = await embeddings.embed_batch(chunks)
+            embeddings_list = await embeddings.embed_batch_concurrent(chunks)
 
             full_path = note.full_path
+
+            # Atomic swap: compute embeddings BEFORE removing old entries
             index.remove(full_path)
 
             for i, (chunk_text, vec) in enumerate(zip(chunks, embeddings_list)):

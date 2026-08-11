@@ -94,10 +94,16 @@ BRAIN_URL=http://localhost:9000 uv run brain ping
 | Tool | Descrição |
 |------|-----------|
 | `ping` | Health-check → `"pong"` |
-| `brain_store(layer, path, content, scope?)` | Salva nota + indexa. Scope obrigatório para arquitetura/regras/estudos |
+| `brain_store(layer, path, content, scope?, project?, tags?)` | Salva nota + indexa. Scope obrigatório para arquitetura/regras/estudos |
 | `brain_read(layer, path, scope?)` | Lê nota do vault. Scope obrigatório para arquitetura/regras/estudos |
-| `brain_search(query, layer?, scope?, top_k?)` | Busca semântica (embedding). Scope filtra por projetos/global |
+| `brain_search(query, layer?, scope?, project?, tag?, top_k?)` | Busca semântica (embedding). Filtros por layer, scope, projeto, tag |
 | `brain_reindex(all?, layer?, path?)` | Reconstrói índice |
+| `brain_project_create(name, description?)` | Cria um projeto no registro |
+| `brain_project_list()` | Lista todos os projetos registrados |
+| `brain_project_notes(project)` | Lista notas de um projeto (owned + linked) |
+| `brain_project_link(note_path, project)` | Liga nota global a um projeto |
+| `brain_project_unlink(note_path, project)` | Remove ligação nota ↔ projeto |
+| `brain_project_delete(name)` | Deleta um projeto |
 
 ## Estrutura de Camadas com Scope
 
@@ -157,6 +163,13 @@ Skills individuais por tool em `.agents/skills/brain/tools/`.
 
 ## Regras de desenvolvimento
 
+- **Versionamento obrigatório**: Ao adicionar features, fixes ou breaking changes, SEMPRE atualizar a versão em TODOS os arquivos:
+  1. `pyproject.toml` → `version = "x.y.z"`
+  2. `src/brain_server/__init__.py` → `__version__ = "x.y.z"`
+  3. `workflow-state.json` → `test_count`, `tasks_completed`, `last_updated`
+  - **Patch** (x.y.Z): fixes, docs, refactoring sem mudança de API
+  - **Minor** (x.Y.0): novas features, tools, parâmetros (backward-compatible)
+  - **Major** (X.0.0): breaking changes, remoção de tools, mudança de schema
 - **Spec-driven-development** para features novas (`.spec/brain-mcp-server/`)
 - **workflow-state.json** deve ser lido/criado antes de começar
 - **Code review** obrigatório ao finalizar tarefas

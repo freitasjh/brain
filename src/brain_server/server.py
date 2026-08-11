@@ -59,13 +59,14 @@ def create_server(settings: Settings) -> FastMCP:
                     rel = f.relative_to(vault.vault_path)
                     layer = rel.parts[0]
                     path_stem = str(rel.with_suffix(""))
-                    full_vault_path = f"{layer}/{path_stem}.md"
+                    # path_stem is already relative to vault root (Bug 1 fix)
+                    full_vault_path = f"{path_stem}.md"
                     
                     # Extract scope if layer requires it
                     scope = _extract_scope_from_path(layer, path_stem)
 
                     chunks = embeddings.chunk_text(content)
-                    vecs = await embeddings.embed_batch(chunks)
+                    vecs = await embeddings.embed_batch_concurrent(chunks)
                     index.remove(full_vault_path)
 
                     for i, (ct, vec) in enumerate(zip(chunks, vecs)):
@@ -99,11 +100,13 @@ def create_server(settings: Settings) -> FastMCP:
     # Register brain tools
     from brain_server.tools import brain_read, brain_search, brain_store
     from brain_server.tools import brain_reindex
+    from brain_server.tools import brain_project
 
     brain_store.register(server, vault, embeddings, index)
     brain_read.register(server, vault)
     brain_search.register(server, embeddings, index)
     brain_reindex.register(server, vault, embeddings, index)
+    brain_project.register(server, index)
 
     logger.info(
         "Server initialized — vault=%s index=%d entries",

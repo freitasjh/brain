@@ -21,6 +21,8 @@ def register(server: FastMCP, embeddings: EmbeddingEngine, index: VectorIndex) -
         query: str,
         layer: str | None = None,
         scope: str | None = None,
+        project: str | None = None,
+        tag: str | None = None,
         top_k: int = 5,
     ) -> str:
         """Search the brain vault by semantic similarity.
@@ -28,7 +30,9 @@ def register(server: FastMCP, embeddings: EmbeddingEngine, index: VectorIndex) -
         Args:
             query: The search query text
             layer: Optional layer filter (arquitetura, regras, sessoes, projetos, indexacao)
-            scope: Optional scope filter ('projetos' or 'global'). Only applies to 'arquitetura' and 'regras' layers.
+            scope: Optional scope filter ('projetos' or 'global')
+            project: Optional project name filter (includes both owned and linked global notes)
+            tag: Optional tag filter (searches within tags field)
             top_k: Maximum number of results (1-20, default 5)
         """
         if not query.strip():
@@ -43,8 +47,15 @@ def register(server: FastMCP, embeddings: EmbeddingEngine, index: VectorIndex) -
         except EmbeddingError as exc:
             return f"EMBEDDING_FAILED: {exc}"
 
-        # Search with optional scope filter
-        results = index.search(query_vec, top_k=top_k, layer_filter=layer, scope_filter=scope)
+        # Search with all filters
+        results = index.search(
+            query_vec,
+            top_k=top_k,
+            layer_filter=layer,
+            scope_filter=scope,
+            project_filter=project,
+            tag_filter=tag,
+        )
 
         if not results:
             return json.dumps({"results": [], "total": 0}, ensure_ascii=False)
@@ -54,10 +65,12 @@ def register(server: FastMCP, embeddings: EmbeddingEngine, index: VectorIndex) -
                 {
                     "path": r.path,
                     "layer": r.layer,
-                    "scope": r.scope if hasattr(r, 'scope') else None,
+                    "scope": r.scope,
                     "score": r.score,
                     "snippet": r.snippet,
                     "chunk_index": r.chunk_index,
+                    "project": r.project_name,
+                    "tags": r.tags,
                 }
                 for r in results
             ],

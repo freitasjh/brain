@@ -74,6 +74,22 @@ class EmbeddingEngine:
             results.append(vec)
         return results
 
+    async def embed_batch_concurrent(
+        self, texts: list[str], max_concurrency: int = 4
+    ) -> list[list[float]]:
+        """Generate embeddings concurrently with bounded parallelism."""
+        import asyncio
+
+        semaphore = asyncio.Semaphore(max_concurrency)
+        results: list[list[float] | None] = [None] * len(texts)
+
+        async def _embed_one(idx: int, t: str) -> None:
+            async with semaphore:
+                results[idx] = await self.embed(t)
+
+        await asyncio.gather(*(_embed_one(i, t) for i, t in enumerate(texts)))
+        return [r for r in results if r is not None]
+
     @staticmethod
     def chunk_text(text: str, max_tokens: int = 4096) -> list[str]:
         """Split markdown text into chunks by ## sections.

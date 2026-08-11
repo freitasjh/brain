@@ -15,7 +15,9 @@ class IndexEntry:
     snippet: str = ""  # first ~200 chars of the chunk
     chunk_index: int = 0
     total_chunks: int = 1
-    scope: str | None = None  # "projetos" or "global" (for arquitetura/regras layers)
+    scope: str | None = None  # "projetos" or "global"
+    project_id: int | None = None  # FK → projects.id (owner project)
+    tags: list[str] | None = None  # extracted from frontmatter
 
 
 @dataclass
@@ -27,4 +29,26 @@ class SearchResult:
     score: float  # cosine similarity 0..1
     snippet: str  # first ~200 chars of the chunk
     chunk_index: int = 0
-    scope: str | None = None  # "projetos" or "global" (for arquitetura/regras layers)
+    scope: str | None = None  # "projetos" or "global"
+    project_id: int | None = None
+    project_name: str | None = None
+    tags: list[str] | None = None
+
+
+@dataclass
+class Project:
+    """A registered project in the brain."""
+
+    id: int
+    name: str
+    description: str = ""
+    created_at: str = ""
+
+
+@dataclass
+class NoteLink:
+    """A link between a note (by path) and a project."""
+
+    note_path: str
+    project_id: int
+    project_name: str = ""
