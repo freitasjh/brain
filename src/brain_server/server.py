@@ -52,6 +52,7 @@ def create_server(settings: Settings) -> FastMCP:
 
         async def _auto_rebuild():
             from brain_server.tools.brain_reindex import _extract_scope_from_path
+            from brain_server.tools.brain_store import _inject_project_link
             from brain_server.vault.models import parse_frontmatter
             
             for f in vault_files:
@@ -69,17 +70,24 @@ def create_server(settings: Settings) -> FastMCP:
                     # Parse frontmatter for project/tags
                     fm = parse_frontmatter(content)
                     project_id = None
+                    project_name = None
                     if fm["project"]:
-                        proj = index.project_get(fm["project"])
+                        project_name = fm["project"]
+                        proj = index.project_get(project_name)
                         if proj:
                             project_id = proj.id
                         else:
                             try:
-                                proj = index.project_create(fm["project"])
+                                proj = index.project_create(project_name)
                                 project_id = proj.id
                             except ValueError:
                                 pass
                     tags_list = fm["tags"] or None
+
+                    # Inject [[project]] link if missing
+                    if project_name and f"[[{project_name}]]" not in content:
+                        content = _inject_project_link(content, project_name)
+                        f.write_text(content, encoding="utf-8")
 
                     chunks = embeddings.chunk_text(content)
                     vecs = await embeddings.embed_batch_concurrent(chunks)
@@ -101,6 +109,14 @@ def create_server(settings: Settings) -> FastMCP:
                     logger.warning("Auto-rebuild skipped %s: %s", f, exc)
             index.save()
             logger.info("Auto-rebuild complete — %d entries", index.size())
+
+            # Sync Obsidian project index pages
+            from brain_server.tools.brain_project import _sync_project_page
+            for proj in index.project_list():
+                try:
+                    _sync_project_page(vault, index, proj.name)
+                except Exception as exc:
+                    logger.warning("Failed to sync project page '%s': %s", proj.name, exc)
 
         try:
             loop = asyncio.get_running_loop()
@@ -124,7 +140,7 @@ def create_server(settings: Settings) -> FastMCP:
     brain_read.register(server, vault)
     brain_search.register(server, embeddings, index)
     brain_reindex.register(server, vault, embeddings, index)
-    brain_project.register(server, index)
+    brain_project.register(server, index, vault)
 
     logger.info(
         "Server initialized — vault=%s index=%d entries",

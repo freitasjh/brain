@@ -37,6 +37,19 @@ def _build_frontmatter(
     return "\n".join(lines)
 
 
+def _inject_project_link(content: str, project: str) -> str:
+    """Append Obsidian [[wiki-link]] to project at the end of content.
+
+    Adds a '## Projeto' section with [[project-name]] link so Obsidian
+    can resolve navigation between notes and project pages.
+    """
+    link_section = f"\n\n---\n## Projeto\n\n[[{project}]]"
+    # Don't duplicate if already present
+    if f"[[{project}]]" in content:
+        return content
+    return content + link_section
+
+
 def _merge_frontmatter(content: str, frontmatter: str) -> str:
     """Merge new frontmatter into existing content.
 
@@ -126,6 +139,10 @@ def register(server: FastMCP, vault: VaultManager, embeddings: EmbeddingEngine, 
                 project=project, tags=tags_list, scope=scope, layer=layer,
             )
             vault_content = _merge_frontmatter(content, frontmatter)
+
+        # Inject Obsidian [[project]] link for navigation
+        if project:
+            vault_content = _inject_project_link(vault_content, project)
 
         # Write to vault
         try:

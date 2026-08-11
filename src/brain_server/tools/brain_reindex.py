@@ -8,6 +8,7 @@ from mcp.server import FastMCP
 
 from brain_server.embeddings.engine import EmbeddingEngine, EmbeddingError
 from brain_server.index.store import VectorIndex
+from brain_server.tools.brain_store import _inject_project_link
 from brain_server.vault.manager import VaultManager
 from brain_server.vault.models import LAYERS_WITH_SCOPE, VALID_SCOPES, parse_frontmatter
 
@@ -121,17 +122,24 @@ async def _reindex_files(
             # Parse frontmatter for project/tags (Bug 2 residual fix)
             fm = parse_frontmatter(content)
             project_id = None
+            project_name = None
             if fm["project"]:
-                proj = index.project_get(fm["project"])
+                project_name = fm["project"]
+                proj = index.project_get(project_name)
                 if proj:
                     project_id = proj.id
                 else:
                     try:
-                        proj = index.project_create(fm["project"])
+                        proj = index.project_create(project_name)
                         project_id = proj.id
                     except ValueError:
                         pass  # project name conflict, skip
             tags_list = fm["tags"] or None
+
+            # Inject [[project]] link if missing (Obsidian navigation)
+            if project_name and f"[[{project_name}]]" not in content:
+                content = _inject_project_link(content, project_name)
+                f.write_text(content, encoding="utf-8")
 
             chunks = embeddings.chunk_text(content)
             embeddings_list = await embeddings.embed_batch_concurrent(chunks)
@@ -186,19 +194,26 @@ async def _reindex_notes(
             # Parse frontmatter for project/tags (Bug 2 residual fix)
             fm = parse_frontmatter(note.content)
             project_id = None
+            project_name = None
             if fm["project"]:
-                proj = index.project_get(fm["project"])
+                project_name = fm["project"]
+                proj = index.project_get(project_name)
                 if proj:
                     project_id = proj.id
                 else:
                     try:
-                        proj = index.project_create(fm["project"])
+                        proj = index.project_create(project_name)
                         project_id = proj.id
                     except ValueError:
                         pass
             tags_list = fm["tags"] or None
 
-            chunks = embeddings.chunk_text(note.content)
+            # Inject [[project]] link into content for indexing
+            index_content = note.content
+            if project_name and f"[[{project_name}]]" not in index_content:
+                index_content = _inject_project_link(index_content, project_name)
+
+            chunks = embeddings.chunk_text(index_content)
             embeddings_list = await embeddings.embed_batch_concurrent(chunks)
 
             full_path = note.full_path
