@@ -73,3 +73,41 @@ def sanitize_relative_path(raw: str) -> str:
         raise ValueError(f"Path traversal detected: {raw}")
     # Normalize to forward-slash relative
     return str(p)
+
+
+def parse_frontmatter(content: str) -> dict:
+    """Extract metadata from YAML frontmatter in markdown content.
+
+    Parses content like:
+        ---
+        project: my-project
+        tags: [java, oo]
+        ---
+        # Rest of content
+
+    Returns dict with 'project' (str|None) and 'tags' (list[str]).
+    """
+    import re
+
+    result: dict = {"project": None, "tags": []}
+
+    fm_match = re.match(r"^---\n(.+?)\n---", content, re.DOTALL)
+    if not fm_match:
+        return result
+
+    fm_block = fm_match.group(1)
+    for line in fm_block.split("\n"):
+        line = line.strip()
+        if line.startswith("project:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                result["project"] = val
+        elif line.startswith("tags:"):
+            val = line.split(":", 1)[1].strip()
+            # Handle [tag1, tag2] format
+            if val.startswith("[") and val.endswith("]"):
+                result["tags"] = [t.strip() for t in val[1:-1].split(",") if t.strip()]
+            elif val:
+                result["tags"] = [t.strip() for t in val.split(",") if t.strip()]
+
+    return result

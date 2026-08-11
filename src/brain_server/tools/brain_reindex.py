@@ -9,7 +9,7 @@ from mcp.server import FastMCP
 from brain_server.embeddings.engine import EmbeddingEngine, EmbeddingError
 from brain_server.index.store import VectorIndex
 from brain_server.vault.manager import VaultManager
-from brain_server.vault.models import LAYERS_WITH_SCOPE, VALID_SCOPES
+from brain_server.vault.models import LAYERS_WITH_SCOPE, VALID_SCOPES, parse_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ async def _reindex_files(
 ) -> str:
     """Reindex files from a list of Path objects.
 
-    Computes all embeddings first, then swaps old↔new atomically per file.
-    Uses concurrent embedding for speed (Bug 4 fix).
+    Parses frontmatter for project/tags, computes embeddings concurrently,
+    then swaps old↔new atomically per file.
     """
     count = 0
     errors = 0
@@ -117,6 +117,21 @@ async def _reindex_files(
 
             # Extract scope if layer requires it
             scope = _extract_scope_from_path(layer, path_stem)
+
+            # Parse frontmatter for project/tags (Bug 2 residual fix)
+            fm = parse_frontmatter(content)
+            project_id = None
+            if fm["project"]:
+                proj = index.project_get(fm["project"])
+                if proj:
+                    project_id = proj.id
+                else:
+                    try:
+                        proj = index.project_create(fm["project"])
+                        project_id = proj.id
+                    except ValueError:
+                        pass  # project name conflict, skip
+            tags_list = fm["tags"] or None
 
             chunks = embeddings.chunk_text(content)
             embeddings_list = await embeddings.embed_batch_concurrent(chunks)
@@ -137,6 +152,8 @@ async def _reindex_files(
                     chunk_index=i,
                     total_chunks=len(chunks),
                     scope=scope,
+                    project_id=project_id,
+                    tags=tags_list,
                 )
             count += 1
         except EmbeddingError as exc:
@@ -158,14 +175,29 @@ async def _reindex_notes(
 ) -> str:
     """Reindex from a list of Note objects.
 
-    Computes all embeddings first, then swaps old↔new atomically per note.
-    Uses concurrent embedding for speed (Bug 4 fix).
+    Parses frontmatter for project/tags, computes embeddings concurrently,
+    then swaps old↔new atomically per note.
     """
     count = 0
     errors = 0
 
     for note in notes:
         try:
+            # Parse frontmatter for project/tags (Bug 2 residual fix)
+            fm = parse_frontmatter(note.content)
+            project_id = None
+            if fm["project"]:
+                proj = index.project_get(fm["project"])
+                if proj:
+                    project_id = proj.id
+                else:
+                    try:
+                        proj = index.project_create(fm["project"])
+                        project_id = proj.id
+                    except ValueError:
+                        pass
+            tags_list = fm["tags"] or None
+
             chunks = embeddings.chunk_text(note.content)
             embeddings_list = await embeddings.embed_batch_concurrent(chunks)
 
@@ -183,6 +215,8 @@ async def _reindex_notes(
                     chunk_index=i,
                     total_chunks=len(chunks),
                     scope=note.scope,
+                    project_id=project_id,
+                    tags=tags_list,
                 )
             count += 1
         except EmbeddingError as exc:

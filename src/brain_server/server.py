@@ -52,6 +52,7 @@ def create_server(settings: Settings) -> FastMCP:
 
         async def _auto_rebuild():
             from brain_server.tools.brain_reindex import _extract_scope_from_path
+            from brain_server.vault.models import parse_frontmatter
             
             for f in vault_files:
                 try:
@@ -64,6 +65,21 @@ def create_server(settings: Settings) -> FastMCP:
                     
                     # Extract scope if layer requires it
                     scope = _extract_scope_from_path(layer, path_stem)
+
+                    # Parse frontmatter for project/tags
+                    fm = parse_frontmatter(content)
+                    project_id = None
+                    if fm["project"]:
+                        proj = index.project_get(fm["project"])
+                        if proj:
+                            project_id = proj.id
+                        else:
+                            try:
+                                proj = index.project_create(fm["project"])
+                                project_id = proj.id
+                            except ValueError:
+                                pass
+                    tags_list = fm["tags"] or None
 
                     chunks = embeddings.chunk_text(content)
                     vecs = await embeddings.embed_batch_concurrent(chunks)
@@ -78,6 +94,8 @@ def create_server(settings: Settings) -> FastMCP:
                             chunk_index=i,
                             total_chunks=len(chunks),
                             scope=scope,
+                            project_id=project_id,
+                            tags=tags_list,
                         )
                 except Exception as exc:
                     logger.warning("Auto-rebuild skipped %s: %s", f, exc)
