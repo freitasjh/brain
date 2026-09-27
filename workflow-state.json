@@ -1,9 +1,56 @@
 {
   "project": "brain",
-  "description": "MCP server Python — cérebro para agentes de IA com Obsidian + Ollama + SQLite vector DB + Projetos",
-  "phase": "implementation",
-  "status": "projects-feature-complete",
-  "spec_name": "brain-mcp-server",
+  "version": "0.9.0",
+  "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
+  "current_feature": "queue-hardening-and-path-containment",
+  "current_phase": "completed",
+  "previous_phase": "implementation",
+  "next_phase": null,
+  "type": "feature",
+  "artifacts": {
+    "archive": ".spec/archive/20260917-brain-rust-sqlite/",
+    "archive_superseded": ".spec/archive/20260927-brain-mcp-server/SUPERSEDED.md"
+  },
+  "features": [
+    {
+      "name": "phase-c-mcp-harness-hooks",
+      "phase": "archived",
+      "progress": 100
+    },
+    {
+      "name": "brain-embed-a3-hardening",
+      "phase": "completed",
+      "progress": 100
+    },
+    {
+      "name": "p0-zero-vector",
+      "phase": "completed",
+      "progress": 100
+    },
+    {
+      "name": "v01-limits-and-queue",
+      "phase": "completed",
+      "progress": 100
+    },
+    {
+      "name": "w01-w05-security-and-reuse",
+      "phase": "completed",
+      "progress": 100
+    },
+    {
+      "name": "x01-x06-concurrency-and-failure",
+      "phase": "completed",
+      "progress": 100
+    },
+    {
+      "name": "y01-y06-queue-funnel-and-flake",
+      "phase": "completed",
+      "progress": 100
+    }
+  ],
+  "phase": "archived",
+  "status": "deployed-production-2026-09-26",
+  "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
     "code-review-fixes",
@@ -13,7 +60,19 @@
     "ide-integration",
     "scope-feature",
     "sqlite-vector-store",
-    "projects-feature"
+    "projects-feature",
+    "rust-migration-spec",
+    "rust-a-b-implementation",
+    "sprint1-polish",
+    "archived",
+    "brain-embed-a3-hardening",
+    "brain-embed-a3-hardening",
+    "p0-zero-vector",
+    "v01-limits-and-queue",
+    "w01-w05-security-and-reuse",
+    "x01-x06-concurrency-and-failure",
+    "y01-y06-queue-funnel-and-flake",
+    "deployed-production-2026-09-26"
   ],
   "tasks_completed": [
     "CORE: MCP server, vault, embeddings, index, tools, tests (42)",
@@ -36,9 +95,217 @@
     "PROJECT-02: Tools brain_project_create/list/notes/link/unlink/delete",
     "PROJECT-03: Busca com filtro project e tag",
     "PROJECT-04: Testes para projeto (18 novos)",
-    "FRONTMATTER-01: Auto-geração de YAML frontmatter no vault (project, tags, scope)"
+    "FRONTMATTER-01: Auto-geração de YAML frontmatter no vault (project, tags, scope)",
+    "REINDEX-01: brain_reindex em background com REINDEX_STARTED / REINDEX_IN_PROGRESS",
+    "RUST-SPEC-01: Requirements EARS Fase A+B (01-requirements.md)",
+    "RUST-SPEC-02: Design schema v4 + RRF + crates (02-design.md)",
+    "RUST-SPEC-03: Tasks breakdown A1-A8+B1-B6 (03-tasks.md)",
+    "RUST-A1: Scaffold workspace 6 crates + Cargo 1.85",
+    "RUST-A2: Store actor WAL + schema v4 + FTS5 + triggers",
+    "RUST-A3: EmbeddingEngine Ollama rustls",
+    "RUST-A4: MCP core + CLI ping/store/read/search/delete/recent/status/export/backup/project",
+    "RUST-A5: Checkpoints/restore + forget_sweep TTL",
+    "RUST-A6: Backup/export temp + migrate vault",
+    "RUST-B1: Hybrid FTS5+vector RRF k=60",
+    "RUST-B2: Entity links RRF",
+    "RUST-B3: Graph wikilink neighbor RRF",
+    "RUST-B4: Authority boost regras/arquitetura+pin + web viewer axum",
+    "RUST-A5b: reindex real + lock REINDEX_IN_PROGRESS",
+    "RUST-B4b: search --explain per-stream",
+    "RUST-A4b: project_notes/link/unlink + note_projects table",
+    "RUST-A8b: viewer ServeDir + CORS + static",
+    "RUST-B5: bench 5 notes 100x 1.0 recall /tmp/bench.json 0.35/0.56ms",
+    "RUST-A6-cov: clippy 0 + cargo test 6 pass",
+    "FIX-C1: batch filter IN HashMap 300->1q",
+    "FIX-C2: batch assembly chunks/projects IN ≤3q",
+    "FIX-C3: pre-filter cosine layer/scope/project + warn",
+    "FIX-A1: FTS escape specials",
+    "FIX-A3: 10 store tests in-mem",
+    "FIX-A5: delete sanitize",
+    "C-HARN-01: harness docs Rust 231 linhas",
+    "C-HOOK-01: brain hook spool XDG lock dedup",
+    "C-MCP-01: mcp_router axum SSE 8321 + stdio fallback + fix block_on panic",
+    "C-MCP-02: tools per-request scope/sanitize, smoke 18321/18322",
+    "C-MCP-03: project/checkpoints/restore/backup/export/sweep E2E 12/12",
+    "C-HARN-02: cli_e2e coexist viewer+mcp automatizado",
+    "C-HOOK-02: brain-hook.py deprecated warn + syntax fix",
+    "C-TEST-01: 41 tests clippy 0 cov 86.75%/70.17%",
+    "SETUP-01: brain setup all|opencode|systemd|project (opencode merge, systemd mcp+viewer, project snippet) + 7 testes",
+    "MCP-REAL-01: rmcp 0.5 SSE protocol (17 tools, handshake E2E) substitui REST custom na 8321",
+    "A3-01: brain-embed [dev-dependencies] axum 0.7 (zero crates novos no workspace)",
+    "A3-02: 9 testes new()/from_options()/from_env() (trim, defaults, blank->default)",
+    "A3-03: 4 testes health_check + fix .unwrap() -> degrada false+log (panic em TLS/CA)",
+    "A3-04: 8 testes embed (vazio, 4xx, sem chave, dim mismatch, nao-numerico->0.0, roundtrip f64->f32)",
+    "A3-05: 5 testes embed_batch_concurrent (ordem com delay embaralhado, batch vazio, 1 falha, peak in-flight=4)",
+    "A3-06: fix BUG LATENTE embed_batch_concurrent ignorava self.timeout_secs (hardcoded 30)",
+    "A3-07: fix sem.acquire().unwrap() -> acquire_owned() com erro tratado",
+    "A3-08: BRAIN_OLLAMA_URL/BRAIN_OLLAMA_MODEL wirados em 5 call sites via from_env()",
+    "A3-09: mock Ollama tests/support/mod.rs (porta efemera 127.0.0.1:0, contador in-flight, Drop abort)",
+    "P0-ZV: chunk_insert Option<&[f32]>; 7/10 call sites escreviam vec![0.0;768]; coverage 0.37%->100%",
+    "P0-ZV: reindex_all nao-destrutivo (DELETE FROM chunks removido; upsert+prune); restore_audit preserva",
+    "P0-ZV: embed() rejeita all-zero; timeout 3s->60s (BRAIN_EMBED_TIMEOUT_SECS); embed_batch_partial",
+    "P0-ZV: status reporta embedding.coverage + ollama; guard zero_vector_guard.rs",
+    "V-01: MAX_CONTENT_BYTES=256KiB MAX_CHUNKS=64 em brain-core; validado nos 3 paths sem chamar Ollama",
+    "V-02: reindex snapshot antes do embed; diverged detectado; REINDEX_DONE broken-down",
+    "V-03: normalize_for_match (casefold+whitespace); DEVE->NAO DEVE nao recicla; norma de polaridade",
+    "V-04: fila de embedding (grava NULL -> responde -> background); store 0.4-3.9s -> 13-39ms",
+    "W-01: BRAIN_EXPORT_ROOT allowlist p/ brain_export/brain_backup (contem canonicalizado, nao prefixo)",
+    "W-02: DEFAULT_REUSE_SIMILARITY=1.0 + BRAIN_REUSE_SIMILARITY opt-in; normative_force por polaridade",
+    "W-03: hook rotaciona em vez de recusar; embed por delta; requests 2105 -> 90",
+    "W-04: fila: recover() no boot, re-enqueue com backoff, drain em loop, QueueOutcome consumido",
+    "X-01: hook RMW sob BEGIN IMMEDIATE; dedup id=d1 vs id=d11 (substring); init_schema fast path",
+    "X-02: finish_owed no got==0 e chunks_sync Err; dead-letter; is_settled honesto",
+    "X-06: returncode checado no brain-hook.py; session-start sai 0 (stdout e contexto injetado)",
+    "Y-01: finish_owed em :691 e :763; owed_without_reading = chunks.len().max(1); 11 return out classificados",
+    "Y-02: portas efemeras + anuncio pos-bind no stdout (identidade, nao conectividade); flake eliminado",
+    "Y-03: ownership_allows(meta_uid, mode, euid) pura + table-test; uid isolado por mutacao",
+    "Y-04: chunks_sync com BEGIN IMMEDIATE; prune_bound = max(own_len, chunk_text(notes.content))",
+    "Y-05: bloco queue.* no brain status do CLI + ponteiro para journalctl e brain_status MCP",
+    "DEPLOY 2026-09-26: build release + systemctl --user restart brain-mcp/brain-viewer; sem DDL",
+    "TD-008: brain-web /api/status + embedding.coverage; viewer badge exibe pct e awaiting-embed; decisao documentada de NAO por ollama no viewer (timeout 5s vs abort 3s)",
+    "TD-011: /api/list serve chunks_total+chunks_embedded; /api/search serve chunk_index; browseAll 4 estados; round-trip de path corrigido (toda nota era unclickable)",
+    "TD-003: redact_url + redact_reqwest_error (parser, nao split); 4 sitios; E2E 0 ocorrencias da senha; 22 testes",
+    "TD-005: duplicata de spec removida; brain-mcp-server arquivada como SUPERADA sem VERIFY (design morto); CONFIGURE_MCP.md 3->11 env vars e comando padrao Rust; .env.example reescrito",
+    "TD-004a: brain server start (US-01.1) com os 4 ACs verificados; serve/serve-mcp sem mudanca de bind",
+    "TD-004b: vault.bak.tar.gz no auto-import, fail-closed, nunca clobbera, dentro de BRAIN_EXPORT_ROOT",
+    "TD-004c: BRAIN_VAULT_PATH removido de config.py; 2 bugs encontrados (crash de .env por extra_forbidden; aviso invisivel via os.getenv)",
+    "TD-004d: bench-hybrid.json duravel no repo; guard que recusa rodar contra DB populado (bench apagaria as 278 notas de producao)",
+    "TD-004e: serve-mcp passa a tratar SIGTERM; teste com SIGTERM real validado por mutacao (exit 15 -> 0)",
+    "BOOKKEEPING: bench.json obsoleto apagado; AGENTS.md e README com server start e env do bench"
   ],
-  "test_count": 100,
-  "test_pass": 100,
-  "last_updated": "2026-07-26"
+  "test_count": 303,
+  "test_pass": 253,
+  "code_review": {
+    "last_invoked_at": "2026-09-26T20:00:00Z",
+    "last_status": "passed",
+    "critical_issues": 0,
+    "attention_issues": 5,
+    "cycles": 5,
+    "reviewer_notes": "5 ciclos. 4 reprovacoes (P0-ZV, V-01..05, W-01..05, X-01..06) + 1 aprovacao (Y-01..06). Modo de falha evoluiu: (1) garantia nunca testada -> (2) ramo adjacente a falha sem teste -> (3) relatorio afirmando invariante mais forte que o codigo. Os 3 invariantes falsos admitidos no lote Y foram corrigidos no CODIGO. 15 mutacoes confirmadas pelo reviewer contra 6 declaradas. Flake de portas fixas nomeado e reproduzido (1 em 5). 5 atencao restantes sao todas de texto (stderr/rustdoc/doc de teste) | TD-008 e TD-011: a varredura do viewer achou 5 instancias de 'campo lido que o endpoint nao serve', 3 vivas, todas fechadas. O mais grave nao era campo: browseAll tirava a layer do path antes de chamar /api/read, tornando TODA nota unclickable"
+  },
+  "harness_status": "passed",
+  "last_updated": "2026-09-27",
+  "tech_debt": [
+    {
+      "id": "TD-001",
+      "issues": [
+        "C3 full scan cosine O(n) em brain-store/src/lib.rs:309"
+      ],
+      "severity": "P2",
+      "phase": "deferred",
+      "status": "vec0 e FLAT: ganho de CONSTANTE (1.7-2.2x), nao assintotico. Medido 50k chunks: 383ms -> 229ms. sqlite-vec=0.1.9 integra sem feature flag e recall 1.0000, filtros in-KNN OK, sync por trigger. C3-02 = 8-10h. So compensa acima de ~50k chunks",
+      "spike": ".spec/ (examples/vec_spike.rs) + crates/brain-store/tests/vec_compat.rs"
+    },
+    {
+      "id": "TD-002",
+      "issues": [
+        "clippy --all-targets"
+      ],
+      "severity": "RESOLVIDO",
+      "status": "4 warnings pre-existentes corrigidos no lote Y-01..06. clippy --all-targets -D warnings = 0"
+    },
+    {
+      "id": "TD-003",
+      "issues": [
+        "URL completa em mensagem de erro pode vazar credencial"
+      ],
+      "severity": "P3",
+      "phase": "resolved",
+      "status": "FECHADO e DEPLOYADO 2026-09-27. 4 sitios: embed() contexto de erro (:229), health_check() eprintln do reqwest::Error (:212), e Debug de EmbedQueue (embed_queue.rs:320). public fn redact_url + redact_reqwest_error em brain-embed. USA PARSER (reqwest::Url), nao split manual: a fronteira e o ULTIMO '@' cru — http://a@b@c@d:1 parseia user='a%40b%40c' host='d', entao ler 'tudo antes do @' publica p@ss@host. Backstop textual FAIL-CLOSED para URL nao-parseavel (Url::parse rejeita mais do que o operador digita, e um BRAIN_OLLAMA_URL digitado errado e exatamente o valor que cai no log). Sem credencial: entrada devolvida byte-identica, o caso comum nao degrada. A URL CONTINUA na mensagem — host e porta preservados, o comentario de embed():227-228 continua verdadeiro. E2E real: BRAIN_OLLAMA_URL='http://alice:SEGREDO@127.0.0.1:1' -> 0 ocorrencias da senha, host presente. RESSALVA honesta do developer: no caminho comum (conexao recusada/timeout) o Display do reqwest::Error JA nao carrega credencial, porque RequestBuilder::new chama extract_authority e remove o userinfo da Url antes do request. O filtro ali e defensivo e no-op. O vetor que VAZA de verdade e REDIRECT: redirect.rs:320 anexa o alvo do Location sem essa remocao. 22 testes novos (285 total). 3 mutacoes, 1 falha cada"
+    },
+    {
+      "id": "TD-004",
+      "issues": [
+        "gaps AC spec<>codigo"
+      ],
+      "severity": "P2",
+      "phase": "resolved",
+      "status": "FECHADO e DEPLOYADO 2026-09-27. US-01.1 (4/4 ACs, testados pelo binario shipped): (1) brain server start na BRAIN_PORT, --port sobrepoe; (2) brain.db ausente cria schema v4 — verificado com Store::schema_version() + table_names() (read-only, sem DDL) porque um teste que so observasse 'open nao errou' passaria contra schema v3; (3) legado presente -> archive + import antes do listener; (4) Ollama fora sobe degradado — JA EXISTIA via a fila, verificado e NAO reimplementado. serve/serve-mcp NAO mudaram de comportamento de bind (exceto o shutdown, aceito explicitamente). B6a vault.bak.tar.gz: sempre que ha algo para importar, antes do import; NUNCA clobbera (2a vez = .2.tar.gz, com symlink_metadata + create_new porque exists() seguiria o link e escreveria atraves dele); vai para BRAIN_EXPORT_ROOT e NAO ao lado do --vault, porque vault e repositorio git e o backup e o artefato mais provavel de ser commitado por engano; se o backup falha o import NAO roda. B6b BRAIN_VAULT_PATH: campo e default removidos de config.py, aviso mantido e AMPLADO. Dois bugs reais que os testes pegaram e que ele teria shipped: (a) deletar o campo sozinho quebrava o .env — pydantic-settings ignora chave BRAIN_-desconhecida do ambiente mas valida as do .env com extra_forbidden, ou seja remover o campo transformava a depreciacao em CRASH para todo operador com a variavel no .env (corrigido com extra='ignore'); (b) o aviso usava os.getenv, que so ve o ambiente — com a variavel so no .env (como deploy real configura) o aviso NAO disparava, sumindo em silencio. pytest 115->124. B5: bench-hybrid.json agora no repo (durable) com format brain-bench/2; bench.json da raiz APAGADO (untracked, e' de outro bench — relatorio before/after de N+1 de queries, nao do recall). ACHADO GRAVE: bench.rs fazia remove_file(&db) em $BRAIN_DB_PATH, e neste ambiente BRAIN_DB_PATH aponta para data/brain.db — rodar o bench como o briefing mandava APAGARIA as 278 notas de producao. Developer pegou; adicionou guard que recusa DB populado. Alem disso hybrid_is_real_vector_scan=false no bench regenerado diz que hybrid_ms nunca mediu scan vetorial real (0 chunks embeddados, corpus sintetico de 5 notas) — o recall 1.0 citado no VERIFY nunca foi numero de qualidade e agora o arquivo diz isso. SIGTERM: serve-mcp so esperava SIGINT, entao producao morria por sinal em CADA systemctl stop sem rodar ct.cancel(). shutdown_on_sigint_or_sigterm() aplicado; teste novo sigterm_stops_serve_mcp_cleanly envia SIGTERM de verdade (reaproveitou o padrao extern kill) e foi validado por mutacao (reverter a linha da exit 15 em vez de 0). TimeoutStopSec=90s do systemd, risco de SIGKILL nao. Deploy: PIDs 3190051/3190052"
+    },
+    {
+      "id": "TD-005",
+      "issues": [
+        "estado de spec e docs sujos"
+      ],
+      "severity": "P3",
+      "phase": "resolved",
+      "status": "FECHADO 2026-09-27. (1) .spec/brain-rust-sqlite/ era duplicata byte-identica de .spec/archive/20260917-brain-rust-sqlite/ — diff -rq confirmou, removida. (2) .spec/brain-mcp-server/ arquivada como .spec/archive/20260927-brain-mcp-server/ com SUPERSEDED.md — SEM VERIFY.md, de proposito: a spec descreve a era Python+vault Obsidian, que nao existe mais (C01), e 03-tasks.md nao tem nenhum checkbox. Fabricar um VERIFY seria um documento afirmando conformidade a um design morto. As dividas aproveitaveis foram extraidas para o SUPERSEDED.md (US-01.1 server start; B6 vault.bak.tar.gz) e o mojibake da linha 16 foi anotado. (3) CONFIGURE_MCP.md: tabela de env de 3 para 11 vars, BRAIN_VAULT_PATH/BRAIN_INDEX_PATH marcadas como removidas em vez de ativas, 'Salva nota no vault' -> '(SQLite; sem arquivo)', e o COMANDO PADRAO deixava de mandar 'uv run python -m brain_server' (legado) sem avisar — agora manda o binario Rust e rotula o Python como legado com o motivo. (4) .env.example reescrito: 11 vars + nota de que userinfo e redigido + os deprecated comentados. README.md e as skills ja estavam corretos (lotes Y e Z)"
+    },
+    {
+      "id": "TD-006",
+      "issues": [
+        "brain-hook.py:269 afirma que o spool 'retries on its own' e nada le o spool"
+      ],
+      "severity": "P2",
+      "phase": "resolved",
+      "status": "FECHADO no lote Z-01 (2026-09-27). A frase de hooks/brain-hook.py:269 foi reescrita no working tree: 'spools the event before it touches the database — so on a failed write the event exists only in that spool, and nothing reads the spool back: there is no retry. Re-send the event, or re-run brain hook with the same payload id once the database is writable.' AGENTS.md:312 alinhado e a DECISAO registrada: o .py sai do caminho suportado na Fase C e brain hook NAO ganha drain do spool (leitor do formato do spool em processo de boot = item de produto, nao correcao de texto). Nada perde dado: o payload e uma linha JSON em disco e o operador e avisado para reenviar. Teste: test_the_failure_message_does_not_promise_a_retry_that_does_not_exist (mutacao: restaurar a frase antiga -> 1 falha)"
+    },
+    {
+      "id": "TD-007",
+      "issues": [
+        "suite Python fora do gate"
+      ],
+      "severity": "P2",
+      "phase": "resolved",
+      "status": "FECHADO no lote Z-05 (2026-09-27). A premissa 'pytest nao esta instalado' era FALSA e foi admitida pelo developer: pytest 9.1.1 esta no .venv e python -m pytest src/tests/ -q da 115 passed / 2 failed desde o comeco. pytest virou gate OBRIGATORIO, declarado independente da suite Rust. Hermetico: todo teste usa tmp_path; test_integration.py sobe mock de Ollama em 127.0.0.1:0; test_brain_hook_failure.py faz monkeypatch de subprocess.run. Nenhum toca data/brain.db, rede real ou Ollama real. Os 2 failures sao de test_integration.py (MCP legado morre com 'No module named brain_server') — ambiental, do codigo que a Fase C remove. Mutacao 'if not ok: -> if False:' no arquivo real -> 2 falhas (mais os 2 legados)"
+    },
+    {
+      "id": "TD-008",
+      "issues": [
+        "brain-web /api/status sem embedding coverage"
+      ],
+      "severity": "P3",
+      "phase": "resolved",
+      "status": "FECHADO 2026-09-27. /api/status agora reporta embedding.coverage com os mesmos nomes de campo de brain_mcp::coverage_status. viewer/index.html exibe no badge: 'embedding 100%' + '(N awaiting embed)' abaixo de 100, com classe .degraded. Decisao documentada: NAO inclui ollama no status do viewer — health_check e HTTP de 5s sob o abort de 3s do fetch seria status mentindo sobre o Ollama em toda carga, alem de dep de rede num crate read-only. Descoberta da saude viva: tool MCP brain_status e journalctl. +2 testes (brain-web 3->5); mutacao 'apagar o bloco de coverage' -> 3 falhas. Deployado: PIDs 2667840/2667845"
+    },
+    {
+      "id": "TD-009",
+      "issues": [
+        "ordem do boot (recover antes do bind) nao asseverada por teste"
+      ],
+      "severity": "P3",
+      "phase": "accepted",
+      "status": "Declarada e justificada em prosa em boot_queue. Fixar exigiria recovery deliberadamente lento + cliente concorrente. Aceito como gap declarado"
+    },
+    {
+      "id": "TD-010",
+      "issues": [
+        "brain recent (e outros comandos) entram em panico com Broken pipe ao serem piped para head/grep -m"
+      ],
+      "severity": "P3",
+      "phase": "resolved",
+      "status": "FECHADO no lote Z (2026-09-27) e DEPLOYADO. Macro outln! em crates/brain-cli/src/main.rs:19 — writeln! em stdout; so ErrorKind::BrokenPipe sai com 0 e em silencio, todo outro erro de escrita continua o panic do println!. 40 call sites trocados, os 14 eprintln! intactos. Medido no binario de producao: recent --top-k 40 (340KB) e search --explain --top-k 60 (446KB) foram de exit=101+panic para exit=0 com stderr limpo. Repro exige output >64KiB (com head -1 o producer cabe no buffer do pipe e nunca ve EPIPE — por isso 20 tentativas de '| head -1' deram 0). Teste: a_closed_reader_is_not_reported_as_a_failure",
+      "discovered_by": "verificacao funcional pos-deploy"
+    },
+    {
+      "id": "TD-011",
+      "issues": [
+        "viewer/index.html:147 browseAll() le n.indexed mas /api/list so serve layer/path/scope"
+      ],
+      "severity": "P2",
+      "phase": "resolved",
+      "status": "FECHADO e DEPLOYADO 2026-09-27. /api/list serve chunks_total e chunks_embedded (nomes identicos aos de EmbeddingCoverage em /api/status — nenhum quarto vocabulario); /api/search passou a servir chunk_index. browseAll deriva o badge de 4 estados: chunks_embedded>=1 -> '📝'; chunks_embedded==0 e chunks_total>0 -> '⚠️ FTS only'; chunks_total==0 -> '⚠️ No chunks' (falha distinta: chunks_sync que nunca rodou, nao fila); campo ausente -> SEM badge, porque um aviso cujo default e 'ligado' e o TD-011 em miniatura. ACHADOS COLATERAIS DA MESMA CLASSE: (1) item.chunk_index lido e nao servido -> viewer imprimia 'Chunk: undefined' em TODO hit; (2) browseAll passava n.path com o segmento de layer REMOVIDO para /api/read, que casa notes.path exato -> TODA nota do browse era unclickable (404 not found), e o .replace('.md','') era morto (paths sao extensionless) e mandava layer= que ReadQ nem tem campo. Varredura completa do viewer: o padrao 'campo lido que o endpoint nao serve' aparecia 5x, 3 vivas, todas fechadas. CASTIGO: remover o scan de browseAll E restaurar n.indexed deixa a suite 263/263 VERDE — nada mais no workspace pega TD-011. O scan de wiring (roda o handler de verdade, achata o payload, compara com o que o JS le) e a unica guarda. O extractor do TD-008 so entendia cadeias data.*, por isso nao via browseAll; agora e name-based. Deploy: PIDs 2785303/2785323. Round-trip /api/list -> /api/read: 25/25 ok; 277/277 notas com chunk embeddado; 0 FTS-only",
+      "discovered_by": "lote TD-008 (achado colateral)"
+    }
+  ],
+  "test_breakdown": {
+    "rust_workspace": 303,
+    "python_src_tests": 124,
+    "python_legacy_integration_failing": 2,
+    "total": 429
+  },
+  "production": {
+    "deployed_at": "2026-09-27",
+    "services": [
+      "brain-mcp.service:8321",
+      "brain-viewer.service:8322"
+    ],
+    "pids": "3190051/3190052",
+    "schema_version": "4 (inalterado; nenhum DDL rodou no open)",
+    "tables": 15,
+    "notes": 278,
+    "chunks": 1000,
+    "projects": 6,
+    "embedding_coverage_pct": 100
+  }
 }
