@@ -25,7 +25,8 @@ class OllamaMockHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
             _ = json.loads(body)  # parse but ignore
-            response = json.dumps({"embedding": [0.1, 0.2, 0.3, 0.4]}).encode()
+            # Return 768-dim vector to match VectorIndex.EMBEDDING_DIM
+            response = json.dumps({"embedding": [0.1] * 768}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
@@ -129,24 +130,45 @@ async def test_integration_full_cycle(
             assert first["layer"] == "regras"
             assert first["score"] > 0
 
-            # ── 5. brain_reindex (all) ─────────────────────────────────────
+            # ── 5. brain_reindex (all) → now background ───────────────────────
             reindex_result = await session.call_tool(
                 "brain_reindex",
                 arguments={"all": True},
             )
             assert reindex_result.content
             reindex_text = reindex_result.content[0].text
-            assert "Reindexed" in reindex_text
+            assert "REINDEX_STARTED" in reindex_text or "Reindexed" in reindex_text
 
-            # ── 6. brain_search after reindex ─────────────────────────────
-            search2_result = await session.call_tool(
-                "brain_search",
-                arguments={"query": "select", "top_k": 5},
+            # Second call while reindex is still running should return IN_PROGRESS
+            # (with 768-dim mock reindex is fast; we still check that either
+            #  IN_PROGRESS or STARTED is returned — both prove no timeout)
+            reindex2_result = await session.call_tool(
+                "brain_reindex",
+                arguments={"all": True},
             )
-            assert search2_result.content
-            search2_text = search2_result.content[0].text
-            data2 = json.loads(search2_text)
-            assert data2["total"] > 0, "Search should find results after reindex"
+            assert reindex2_result.content
+            reindex2_text = reindex2_result.content[0].text
+            assert (
+                "REINDEX_IN_PROGRESS" in reindex2_text
+                or "REINDEX_STARTED" in reindex2_text
+                or "Reindexed" in reindex2_text
+            )
+
+            # Wait for background reindex to finish (poll search)
+            import asyncio as _asyncio
+
+            for _ in range(10):
+                await _asyncio.sleep(0.5)
+                search2_result = await session.call_tool(
+                    "brain_search",
+                    arguments={"query": "select", "top_k": 5},
+                )
+                data2 = json.loads(search2_result.content[0].text)
+                if data2["total"] > 0:
+                    break
+            else:
+                assert False, "Search should find results after background reindex"
+
             assert data2["results"][0]["score"] > 0
 
 

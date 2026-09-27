@@ -1,7 +1,8 @@
-"""MCP tool: brain_reindex — rebuild vector index partially or fully."""
+"""MCP tool: brain_reindex — rebuild vector index partially or fully (background)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from mcp.server import FastMCP
@@ -44,54 +45,102 @@ def register(
         layer: str | None = None,
         path: str | None = None,
     ) -> str:
-        """Rebuild the vector index (partial or full).
+        """Rebuild the vector index (partial or full) in background.
+
+        Returns immediately; heavy embedding work runs asynchronously.
+        If a reindex is already running, returns REINDEX_IN_PROGRESS.
 
         Args:
             all: If True, reindex every file in the vault
             layer: If provided (and all=False), reindex only this layer
             path: If provided (and all=False, layer=None), reindex specific file
         """
-        # Validate parameters
+        # Validate parameters — sync, no await
         params = [all, layer is not None, path is not None]
         if sum(params) != 1:
             return (
                 "INVALID_PARAMS: provide exactly one of all=True, layer=<name>, or path=<path>"
             )
 
-        # Guard against concurrent reindex operations
+        # Guard against concurrent reindex operations (lock + pending task)
         if index.reindexing:
             return "REINDEX_IN_PROGRESS: another reindex operation is already running"
 
-        try:
+        # Quick synchronous validation for fast error feedback (before background)
+        if path is not None:
+            if "/" not in path:
+                return "INVALID_PARAMS: path must include layer, e.g. 'arquitetura/projeto-x'"
+            layer_name, rel_path = path.split("/", 1)
+            if rel_path.endswith(".md"):
+                rel_path = rel_path[:-3]
+            scope = _extract_scope_from_path(layer_name, rel_path)
+            try:
+                vault.read(layer_name, rel_path, scope=scope)
+            except ValueError as exc:
+                return f"INVALID_PARAMS: {exc}"
+            except FileNotFoundError as exc:
+                return f"NOT_FOUND: {exc}"
+
+        if layer is not None:
+            from brain_server.vault.models import VALID_LAYERS
+            if layer not in VALID_LAYERS:
+                return f"INVALID_PARAMS: Invalid layer '{layer}'. Valid: {', '.join(sorted(VALID_LAYERS))}"
+
+        # Capture values for closure (avoid shadowing builtin `all`)
+        all_flag = all
+        layer_flag = layer
+        path_flag = path
+
+        async def _background() -> None:
             async with index._reindex_lock:
-                if all:
-                    files = vault.list_all_files()
-                    logger.info("Reindexing all %d files", len(files))
-                    return await _reindex_files(vault, embeddings, index, files)
+                try:
+                    if all_flag:
+                        files = vault.list_all_files()
+                        logger.info("Background reindexing all %d files", len(files))
+                        result = await _reindex_files(vault, embeddings, index, files)
+                        logger.info("Background reindex complete: %s", result)
+                    elif layer_flag is not None:
+                        notes = vault.list_notes(layer=layer_flag)
+                        logger.info("Background reindexing layer '%s' (%d notes)", layer_flag, len(notes))
+                        result = await _reindex_notes(vault, embeddings, index, notes)
+                        logger.info("Background reindex complete: %s", result)
+                    elif path_flag is not None:
+                        if "/" not in path_flag:
+                            logger.error("Background reindex invalid path: %s", path_flag)
+                            return
+                        layer_name, rel_path = path_flag.split("/", 1)
+                        if rel_path.endswith(".md"):
+                            rel_path = rel_path[:-3]
+                        scope = _extract_scope_from_path(layer_name, rel_path)
+                        note = vault.read(layer_name, rel_path, scope=scope)
+                        result = await _reindex_notes(vault, embeddings, index, [note])
+                        logger.info("Background reindex complete: %s", result)
+                except ValueError as exc:
+                    logger.error("Background reindex invalid params: %s", exc)
+                except FileNotFoundError as exc:
+                    logger.error("Background reindex not found: %s", exc)
+                except Exception as exc:
+                    logger.error("Background reindex failed: %s", exc, exc_info=True)
 
-                if layer:
-                    notes = vault.list_notes(layer=layer)
-                    return await _reindex_notes(vault, embeddings, index, notes)
+        # Create task synchronously — sets _reindex_task before any await,
+        # so concurrent calls see reindexing=True even before lock is acquired.
+        task = asyncio.create_task(_background())
 
-                if path:
-                    # path should include layer, e.g. "arquitetura/projeto-x/banco.md"
-                    if "/" not in path:
-                        return "INVALID_PARAMS: path must include layer, e.g. 'arquitetura/projeto-x'"
-                    layer_name, rel_path = path.split("/", 1)
-                    # Strip trailing .md to avoid double-extension (Bug 5)
-                    if rel_path.endswith(".md"):
-                        rel_path = rel_path[:-3]
-                    # Extract scope for layers that require it (Bug 3)
-                    scope = _extract_scope_from_path(layer_name, rel_path)
-                    note = vault.read(layer_name, rel_path, scope=scope)
-                    return await _reindex_notes(vault, embeddings, index, [note])
+        def _done_callback(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except Exception as exc:
+                logger.error("Background reindex task crashed: %s", exc, exc_info=True)
 
-        except ValueError as exc:
-            return f"INVALID_PARAMS: {exc}"
-        except FileNotFoundError as exc:
-            return f"NOT_FOUND: {exc}"
+        task.add_done_callback(_done_callback)
+        index._reindex_task = task  # type: ignore[attr-defined]
 
-        return "INTERNAL_ERROR: unexpected path"
+        # Immediate response — no timeout
+        if all_flag:
+            return "REINDEX_STARTED: reindex of all files started in background"
+        if layer_flag is not None:
+            return f"REINDEX_STARTED: reindex of layer '{layer_flag}' started in background"
+        return f"REINDEX_STARTED: reindex of '{path_flag}' started in background"
 
 
 async def _reindex_files(

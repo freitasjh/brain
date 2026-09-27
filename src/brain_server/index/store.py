@@ -63,6 +63,7 @@ class VectorIndex:
         self.index_path = index_path
         self.embed_dim = embed_dim or self.EMBEDDING_DIM
         self._reindex_lock = asyncio.Lock()
+        self._reindex_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Connection / Schema
@@ -174,7 +175,10 @@ class VectorIndex:
 
     @property
     def reindexing(self) -> bool:
-        return self._reindex_lock.locked()
+        if self._reindex_lock.locked():
+            return True
+        task = getattr(self, "_reindex_task", None)
+        return task is not None and not task.done()
 
     # ------------------------------------------------------------------
     # Migration from JSON (v1)
