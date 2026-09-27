@@ -1,0 +1,16 @@
+{
+  "build": "cargo run --release -p brain-cli --example bench",
+  "chunks": 5,
+  "chunks_embedded": 0,
+  "chunks_without_embedding": 5,
+  "corpus": "synthetic: 5 hard-coded notes about memory, 1 chunk each",
+  "format": "brain-bench/2",
+  "fts_ms": 0.07942659,
+  "hybrid_is_real_vector_scan": false,
+  "hybrid_ms": 0.09121668,
+  "notes": 5,
+  "recall": 1.0,
+  "runs_per_measurement": 100,
+  "schema_version": "4",
+  "timestamp": "2026-09-27T14:45:25.995528405+00:00"
+}
