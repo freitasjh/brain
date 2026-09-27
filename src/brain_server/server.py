@@ -7,7 +7,7 @@ import logging
 
 from mcp.server import FastMCP
 
-from brain_server.config import Settings
+from brain_server.config import Settings, legacy_vault_path
 from brain_server.embeddings.engine import EmbeddingEngine
 from brain_server.index.store import VectorIndex
 from brain_server.vault.manager import VaultManager
@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 def create_server(settings: Settings) -> FastMCP:
     """Create and configure the MCP server with all tools registered."""
     # Initialize core components
-    vault = VaultManager(settings.vault_path)
+    # B6b: `settings.vault_path` is gone; the legacy vault root is derived,
+    # not configured. See `legacy_vault_path`.
+    vault = VaultManager(legacy_vault_path())
     embeddings = EmbeddingEngine(
         base_url=settings.ollama_url,
         model=settings.ollama_model,
@@ -144,7 +146,7 @@ def create_server(settings: Settings) -> FastMCP:
 
     logger.info(
         "Server initialized — vault=%s index=%d entries",
-        settings.vault_path,
+        legacy_vault_path(),
         index.size(),
     )
 
@@ -162,7 +164,7 @@ def main() -> None:
 
     logger.info(
         "Brain MCP server starting — vault=%s ollama=%s transport=%s",
-        settings.vault_path,
+        legacy_vault_path(),
         settings.ollama_url,
         settings.transport,
     )
