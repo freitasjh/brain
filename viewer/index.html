@@ -11,6 +11,7 @@
   .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 14px; }
   .status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
   .status.online { background: #1a3a2a; color: #3fb950; }
+  .status.degraded { background: #3a2e1a; color: #f0883e; }
   .status.offline { background: #3a1a1a; color: #f85149; }
   .search-box { display: flex; gap: 8px; margin-bottom: 20px; }
   .search-box input { flex: 1; padding: 10px 16px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #c9d1d9; font-size: 14px; }
@@ -74,9 +75,36 @@ async function checkStatus() {
     const resp = await fetch(`${API_BASE}/api/status`, { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
       const data = await resp.json();
-      statusEl.className = 'status online';
-      const ollama = data.ollama_ok ? '🟢' : '🟡';
-      statusEl.textContent = `🟢 Online · ${data.index_entries} entries · Ollama ${ollama}`;
+      // A 200 carrying {"error": ...} is a broken DB, not a healthy server.
+      // Labelling it "offline" would blame the viewer for the store's failure.
+      if (data.error) {
+        statusEl.className = 'status offline';
+        statusEl.textContent = `🔴 Status error · ${data.error}`;
+        return;
+      }
+      // TD-008. The response used to be fetched and discarded, so the counts
+      // this line advertises were never the ones on screen. Coverage is the
+      // field that matters: `notes`/`chunks` stayed perfectly healthy while the
+      // vector index was 99.6% BLOB-of-zeros and semantic search scored 0.0.
+      const cov = (data.embedding && data.embedding.coverage) || {};
+      const pct = cov.embedding_coverage_pct;
+      const full = typeof pct === 'number' && pct >= 100;
+      statusEl.className = 'status ' + (full ? 'online' : 'degraded');
+      let text = `🟢 Online · ${data.notes} notes · ${data.chunks} chunks · ${data.projects} projects`;
+      if (typeof pct === 'number') {
+        text += ` · embedding ${pct}%`;
+        if (!full) text += ` (${cov.chunks_without_embedding} awaiting embed)`;
+      } else {
+        text += ' · embedding ?';
+      }
+      statusEl.textContent = text;
+      // No Ollama dot here, on purpose. /api/status is a read-only path and
+      // brain-web takes no network dependency; a liveness probe is on the MCP
+      // tool `brain_status`. An earlier version showed `data.ollama_ok`, a field
+      // the endpoint never returned, so the dot was permanently yellow and the
+      // line read "undefined entries" — a badge that cannot be wrong is not a
+      // diagnostic.
+      statusEl.title = 'Ollama liveness is not reported here (read-only endpoint, no network dependency). Check the MCP tool brain_status or: journalctl -u brain-mcp.service';
     }
   } catch {
     statusEl.className = 'status offline';
@@ -109,14 +137,35 @@ async function browseAll() {
       grouped[item.layer].push(item);
     }
 
+    // TD-011. The badge used to read `n.indexed`, a field /api/list has never
+    // served, so `undefined` fell through to the false branch and every note
+    // carried a permanent, meaningless "⚠️ Unindexed".
+    //
+    // The endpoint now serves the same two counts `/api/status` publishes, and
+    // the state is derived here — which also means the default branch is no
+    // longer "something is wrong". A field that is absent is *unknown*, and
+    // unknown renders as no badge at all: a warning that fires on missing data
+    // is this bug wearing a different hat.
+    const badge = n => {
+      const total = n.chunks_total, emb = n.chunks_embedded;
+      if (typeof total !== 'number' || typeof emb !== 'number') return '';
+      if (emb > 0) return '<span class="note-layer" title="Semantically searchable">📝</span>';
+      if (total > 0) {
+        return `<span class="note-layer" title="${total} chunk(s) queued for embedding — findable by text search, not by semantic search">⚠️ FTS only</span>`;
+      }
+      // No chunk rows at all. A different fault from a backlogged queue, so it
+      // says so instead of borrowing the queue's wording.
+      return '<span class="note-layer" title="No chunks — this note is not indexed for either search half">⚠️ No chunks</span>';
+    };
+
     resultsEl.innerHTML = Object.entries(grouped).map(([layer, notes]) => `
       <div style="margin-bottom: 16px;">
         <h3 style="color:#58a6ff;margin-bottom:8px;text-transform:uppercase;font-size:13px;">${layer} (${notes.length})</h3>
         ${notes.map(n => `
-          <div class="note" style="margin-bottom:4px;padding:10px 16px;cursor:pointer" onclick="readNote('${n.layer}','${n.path.replace('.md','').split('/').slice(1).join('/')}')">
+          <div class="note" style="margin-bottom:4px;padding:10px 16px;cursor:pointer" onclick="readNote('${n.path}')">
             <div class="note-header">
               <span class="note-path">${n.path}</span>
-              <span class="note-layer">${n.indexed ? '📝' : '⚠️ Unindexed'}</span>
+              ${badge(n)}
             </div>
           </div>
         `).join('')}
@@ -127,12 +176,17 @@ async function browseAll() {
   }
 }
 
-async function readNote(layer, path) {
+async function readNote(path) {
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '<div class="loading">⏳ Reading...</div>';
 
+  // `path` is `notes.path` verbatim — the layer is its first segment, not
+  // something to strip. /api/read matches that column exactly, so the browse
+  // list used to hand it a path with the layer removed and every click came back
+  // "not found". The `.replace('.md','')` was dead too: paths are stored
+  // extensionless.
   try {
-    const resp = await fetch(`${API_BASE}/api/read?layer=${encodeURIComponent(layer)}&path=${encodeURIComponent(path)}`);
+    const resp = await fetch(`${API_BASE}/api/read?path=${encodeURIComponent(path)}`);
     const data = await resp.json();
 
     if (data.error) {

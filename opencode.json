@@ -1,35 +1,84 @@
 {
   "$schema": "https://opencode.ai/config.json",
+   "plugin": ["./.opencode/plugins/harness-validator.js", "./.opencode/plugins/hitl-guardrail.js"],
   "instructions": [
     ".agents/rules/*.md"
   ],
-  "agent": {
-    "code-reviewer": {
-      "mode": "subagent",
-      "prompt": "{file:./.agents/agent/fullstack-code-reviewer/AGENT.md}",
+  "permission": {
+    "task": "ask"
+  },
+   "agent": {
+     "orchestrator": {
+      "mode": "primary",
+      "prompt": "{file:./.agents/agents/orchestrator/AGENT.md}",
       "tools": {
         "write": false,
         "edit": false,
         "bash": true
       }
     },
-    "qa-engineer": {
+    "developer-engineer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agent/qa-engineer/AGENT.md}",
+      "prompt": "{file:./.agents/agents/developer-engineer/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "codebase-analyzer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/codebase-analyzer/AGENT.md}",
       "tools": {
         "write": true,
         "edit": false,
         "bash": true
       }
     },
-      "developer-engineer": {
-        "mode": "primary",
-        "prompt": "{file:./.agents/agent/developer-engineer/AGENT.md}",
-        "tools": {
-          "write": true,
-          "edit": true,
-          "bash": true
-        }
+    "product-manager": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/product-manager/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": false,
+        "bash": true
       }
-   }
+    },
+    "qa-engineer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/qa-engineer/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": false,
+        "bash": true
+      }
+    },
+    "architect": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/architect/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": false,
+        "bash": true
+      }
+    },
+    "security-engineer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/security-engineer/AGENT.md}",
+      "tools": {
+        "write": true,
+        "edit": false,
+        "bash": true
+      }
+    },
+    "code-reviewer": {
+      "mode": "subagent",
+      "prompt": "{file:./.agents/agents/code-reviewer/AGENT.md}",
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": true
+      }
+    },
+  }
 }
