@@ -1,8 +1,8 @@
 {
   "project": "brain",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
-  "current_feature": "queue-hardening-and-path-containment",
+  "current_feature": "security-hardening-and-shutdown",
   "current_phase": "completed",
   "previous_phase": "implementation",
   "next_phase": null,
@@ -49,7 +49,7 @@
     }
   ],
   "phase": "archived",
-  "status": "deployed-production-2026-09-26",
+  "status": "deployed-production-2026-09-27-post-review",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
@@ -171,17 +171,33 @@
     "TD-004c: BRAIN_VAULT_PATH removido de config.py; 2 bugs encontrados (crash de .env por extra_forbidden; aviso invisivel via os.getenv)",
     "TD-004d: bench-hybrid.json duravel no repo; guard que recusa rodar contra DB populado (bench apagaria as 278 notas de producao)",
     "TD-004e: serve-mcp passa a tratar SIGTERM; teste com SIGTERM real validado por mutacao (exit 15 -> 0)",
-    "BOOKKEEPING: bench.json obsoleto apagado; AGENTS.md e README com server start e env do bench"
+    "BOOKKEEPING: bench.json obsoleto apagado; AGENTS.md e README com server start e env do bench",
+    "L2/V-1: brain serve trata SIGTERM (with_graceful_shutdown, disposicao antes do bind); ExecMainStatus=0 verificado em producao",
+    "L2/V-2: flake cli_e2e era inversao 15s-vs-30s (janela do cliente menor que o bound do embed) + env_remove que selecionava o Ollama default real; DEAD_OLLAMA explicito + readline + janela = SERVER_EMBED_BOUND_SECS+30",
+    "SEC-1: embed() passa a redigir o source; wrapper unico redacted_error_message",
+    "SEC-2: ramo sem esquema no backstop + fallthrough !has_authority; sem regressao byte-identico sem credencial",
+    "SEC-3: ramo BRAIN_TRANSPORT=stdio de server start deixa de ser o meio-caminho (select! + process::exit)",
+    "SEC-4: bench.rs let-else + Store::open_read_only (que falha em DB corrompido, ao contrario da v1)",
+    "SEC-5: tar em .partial-<pid> + rename atomico + fsync do diretorio",
+    "SEC-6: 3 docs que descreviam premissas refutadas por medicao",
+    "BOOKKEEPING: bump 0.9.0 -> 0.9.1"
   ],
-  "test_count": 303,
+  "test_count": 326,
   "test_pass": 253,
   "code_review": {
-    "last_invoked_at": "2026-09-26T20:00:00Z",
+    "last_invoked_at": "2026-09-27T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
-    "attention_issues": 5,
-    "cycles": 5,
-    "reviewer_notes": "5 ciclos. 4 reprovacoes (P0-ZV, V-01..05, W-01..05, X-01..06) + 1 aprovacao (Y-01..06). Modo de falha evoluiu: (1) garantia nunca testada -> (2) ramo adjacente a falha sem teste -> (3) relatorio afirmando invariante mais forte que o codigo. Os 3 invariantes falsos admitidos no lote Y foram corrigidos no CODIGO. 15 mutacoes confirmadas pelo reviewer contra 6 declaradas. Flake de portas fixas nomeado e reproduzido (1 em 5). 5 atencao restantes sao todas de texto (stderr/rustdoc/doc de teste) | TD-008 e TD-011: a varredura do viewer achou 5 instancias de 'campo lido que o endpoint nao serve', 3 vivas, todas fechadas. O mais grave nao era campo: browseAll tirava a layer do path antes de chamar /api/read, tornando TODA nota unclickable"
+    "attention_issues": 0,
+    "cycles": 6,
+    "reviewer_notes": "6 ciclos: 4 reprovacoes (P0-ZV, V-01..05, W-01..05, X-01..06), 1 aprovacao (Y-01..06), 1 reprovacao (6o: 2 criticos de seguranca em TD-003). A correcao passou por um 7o ciclo implicito via mutacao: 16 testes novos, 3 mutacoes de redaction, wrapper unico. O modo de falha encolheu em 4 etapas: garantia nunca testada -> ramo adjacente a falha sem teste -> relatorio afirmando invariante mais forte que o codigo -> politica correta aplicada a N-1 de N sinks. Os ultimos 2 criticos eram cobertura de sink, nao raciocinio",
+    "reviewer_discoveries": [
+      "embed() redigia a URL que montou mas nao o source do reqwest::Error; o Display dele anexa o alvo do redirect, que nao passa por extract_authority. Sink real: rmcp_service.rs:148 imprime {e:#} a cada brain_search",
+      "redact_url devolvia verbatim URL com credencial e sem :// porque Url::parse aceita (scheme 'user', has_authority()==false) e has_userinfo retorna false",
+      "o teste que provava a perfuracao usava reqwest::Client::new() cru; o unico lugar do brain que produz aquele erro e embed(), e nao era testado",
+      "S5 da minha propria pista (constante duplicada Rust/Python sem teste) estava errado: o guard existe e le o Rust vivo",
+      "a premissa do TD-003 (que o Display do reqwest embute a URL no caminho comum) estava errada: embute, mas extract_authority ja higienizou a Url"
+    ]
   },
   "harness_status": "passed",
   "last_updated": "2026-09-27",
@@ -289,10 +305,10 @@
     }
   ],
   "test_breakdown": {
-    "rust_workspace": 303,
+    "rust_workspace": 326,
     "python_src_tests": 124,
     "python_legacy_integration_failing": 2,
-    "total": 429
+    "total": 452
   },
   "production": {
     "deployed_at": "2026-09-27",
@@ -300,12 +316,25 @@
       "brain-mcp.service:8321",
       "brain-viewer.service:8322"
     ],
-    "pids": "3190051/3190052",
+    "pids": "3934190/3934191",
     "schema_version": "4 (inalterado; nenhum DDL rodou no open)",
     "tables": 15,
-    "notes": 278,
-    "chunks": 1000,
+    "notes": 285,
+    "chunks": 1027,
     "projects": 6,
-    "embedding_coverage_pct": 100
+    "embedding_coverage_pct": 100,
+    "version": "0.9.1"
+  },
+  "security": {
+    "redaction_sinks": [
+      "embed()",
+      "health_check()",
+      "Debug for EmbedQueue",
+      "embed_query (herda)"
+    ],
+    "redaction_wrapper": "redacted_error_message — 1 call site de redact_reqwest_error; os 3 request sites passam por ele",
+    "verified_e2e": "BRAIN_OLLAMA_URL com senha, com e sem esquema: 0 ocorrencias no binario de producao; host continua nomeado",
+    "export_allowlist": "BRAIN_EXPORT_ROOT com contencao canonica + ownership (euid) + other-writable",
+    "over_redaction": "mailto:someone@example.com -> ***@example.com. Fail-closed do backstop, nomeado em teste, nao escondido"
   }
 }

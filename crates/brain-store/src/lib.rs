@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use brain_core::{Project, SearchExplain, SearchResult, EMBEDDING_DIM};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{OpenFlags, params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
 pub const SCHEMA_VERSION: i32 = 4;
@@ -611,6 +611,43 @@ impl Store {
 
     pub fn open_in_memory() -> Result<Self> {
         Self::open_in_memory_with_reuse(ReusePolicy::from_env())
+    }
+
+    /// Opens `path` for **reading only**, without running [`Store::init_schema`].
+    ///
+    /// For guards that inspect a database before deciding what to do with it. The
+    /// two properties that matter are the two [`Store::open_with_reuse`] lacks:
+    ///
+    /// - **No DDL.** `init_schema` creates tables, indexes and triggers and
+    ///   writes the `_meta` version row, so a *guard* that called [`Store::open`]
+    ///   was writing to the very database it had been asked to look at — on a
+    ///   file the caller believed it was merely inspecting. Worse, on a
+    ///   read-only or full disk it fails, and a guard that treats "could not
+    ///   open" as "therefore nothing to protect" then takes the destructive
+    ///   branch.
+    /// - **No `sqlite3` write mode.** `SQLITE_OPEN_READ_ONLY` is enforced by the
+    ///   driver, so a bug in the calling code cannot escalate to a write.
+    ///
+    /// Fails, rather than degrading to a fresh empty store, on anything it cannot
+    /// read. Two layers are needed to deliver that, and the first is not enough:
+    ///
+    /// - `Connection::open_with_flags` is **lazy**. It installs a flag and hands
+    ///   back a handle; SQLite does not read a single byte of the file until the
+    ///   first statement runs. So a garbage file, or one whose header is
+    ///   unreadable, opened successfully in a first revision of this function —
+    ///   and a caller asking "may I delete this?" would have been told yes.
+    /// - So one statement is forced here, against `sqlite_master`, which parses
+    ///   the header and the schema. A file that fails it is refused at the open.
+    ///
+    /// A WAL database whose `-shm` sidecar is missing or unreadable is rejected
+    /// this way even though the file itself is legible — correct, because a caller
+    /// that cannot read a database must not be trusted to delete it.
+    pub fn open_read_only(path: &str) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("open db read-only")?;
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+            .context("read db schema (the file may be corrupt or unreadable)")?;
+        Ok(Self { conn, path: path.to_string(), reuse: ReusePolicy::from_env() })
     }
 
     /// In-memory store with an explicit policy; the in-memory twin of
@@ -2155,9 +2192,116 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use brain_core::chunk_text;
+    use std::path::PathBuf;
 
     fn test_store() -> Store {
         Store::open_in_memory().expect("open_in_memory")
+    }
+
+    /// A scratch database path that removes itself, so a test that writes to it
+    /// cannot leave anything behind for another one to trip over.
+    struct ScratchDb(PathBuf);
+
+    impl ScratchDb {
+        fn new(tag: &str) -> ScratchDb {
+            let p = std::env::temp_dir()
+                .join(format!("brain-ro-{}-{tag}.db", std::process::id()));
+            let _ = std::fs::remove_file(&p);
+            ScratchDb(p)
+        }
+
+        fn as_str(&self) -> &str {
+            self.0.to_str().expect("utf-8 scratch path")
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            // WAL sidecars, if the connection left any.
+            let _ = std::fs::remove_file(self.0.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.0.with_extension("db-shm"));
+        }
+    }
+
+    /// `open_read_only` reads a real database, and reports its counts.
+    #[test]
+    fn open_read_only_reads_an_existing_store() {
+        let p = ScratchDb::new("reads");
+        {
+            let s = Store::open(p.as_str()).expect("open for write");
+            s.note_upsert("regras/global/alpha", "regras", Some("global"), "## alpha", None, &[], false, None)
+                .unwrap();
+        }
+        let s = Store::open_read_only(p.as_str()).expect("open read-only");
+        assert_eq!(s.count_notes().unwrap(), 1);
+        assert_eq!(s.path(), p.as_str());
+    }
+
+    /// The property that makes it a *guard* API: it creates nothing.
+    ///
+    /// `Store::open` runs `init_schema`, so a guard that used it would write
+    /// tables, indexes, triggers and the `_meta` version row into the very file
+    /// it was asked to look at. Asserted by opening a database that is not a
+    /// brain database and checking it is still not one afterwards.
+    #[test]
+    fn open_read_only_does_not_run_ddl_on_a_foreign_database() {
+        let p = ScratchDb::new("noddl");
+        {
+            let c = Connection::open(p.as_str()).unwrap();
+            c.execute_batch("CREATE TABLE something_else (x INTEGER);").unwrap();
+        }
+        // It opens: a read-only handle on a valid SQLite file is not an error.
+        Store::open_read_only(p.as_str()).expect("a foreign database is still readable");
+        let c = Connection::open(p.as_str()).unwrap();
+        let tables: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            tables,
+            vec!["something_else".to_string()],
+            "open_read_only created schema in a database it was only asked to inspect"
+        );
+    }
+
+    /// A read-only handle cannot write, so a bug in a caller cannot escalate.
+    #[test]
+    fn open_read_only_refuses_to_write() {
+        let p = ScratchDb::new("nowrite");
+        Store::open(p.as_str()).expect("open for write");
+        let s = Store::open_read_only(p.as_str()).expect("open read-only");
+        let err = s
+            .note_upsert("regras/global/nope", "regras", Some("global"), "## x", None, &[], false, None)
+            .expect_err("a read-only handle must refuse a write");
+        assert!(
+            err.to_string().to_lowercase().contains("readonly")
+                || err.to_string().to_lowercase().contains("read-only"),
+            "expected a read-only error, got: {err}"
+        );
+    }
+
+    /// It **fails** on input it cannot read, rather than degrading to an empty
+    /// store. A guard that treats "could not read" as "nothing to protect" is the
+    /// failure mode this API exists to make impossible — so the failure has to be
+    /// an `Err`, never an `Ok` over zero rows.
+    #[test]
+    fn open_read_only_fails_rather_than_returning_an_empty_store() {
+        let missing = ScratchDb::new("missing");
+        assert!(
+            Store::open_read_only(missing.as_str()).is_err(),
+            "a nonexistent path must be an error, not an empty store"
+        );
+
+        let garbage = ScratchDb::new("garbage");
+        std::fs::write(&garbage.0, b"this is not a sqlite database, not even close").unwrap();
+        assert!(
+            Store::open_read_only(garbage.as_str()).is_err(),
+            "a corrupt file must be an error, not an empty store"
+        );
     }
 
     #[test]
