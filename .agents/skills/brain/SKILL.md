@@ -1,9 +1,11 @@
 ---
 name: brain
 description: >
-  Connect to the Brain MCP server — semantic search, store, and read notes.
+  Connect to the Brain MCP server — 17 tools: hybrid semantic search, note
+  storage with a background embedding queue, projects, audit/restore, TTL.
   Carregue esta skill em qualquer projeto OpenCode para dar aos seus agentes
-  acesso a um cérebro central com memória persistente em Obsidian + Ollama.
+  memória persistente entre sessões. Armazenamento é SQLite (WAL + FTS5) com
+  vetores 768-d do Ollama — não há vault de arquivos.
 license: MIT
 compatibility: OpenCode
 metadata:
