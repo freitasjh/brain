@@ -1,0 +1,370 @@
+//! The Ollama credential must not reach a log, an error string, or a `Debug`.
+//!
+//! `BRAIN_OLLAMA_URL` is operator-supplied and may be
+//! `http://user:pass@host:11434`. The **host** belongs in the error message on
+//! purpose — callers degrade to FTS-only on that error, so naming the endpoint
+//! is the only thing that makes the fallback diagnosable — but the credential
+//! must not ride along. These cases pin both halves of that: the password is
+//! gone, and the host and port are still there.
+//!
+//! No case here needs a real Ollama: the failure is forced with a refused
+//! loopback port or with the mock in `support::`.
+
+mod support;
+
+use std::process::Command;
+
+use brain_embed::{EmbeddingEngine, redact_reqwest_error, redact_url};
+use support::{Mock, Plan, credentialed};
+
+const MODEL: &str = "nomic-embed-text";
+
+/// Distinctive enough that finding it in a log would be unambiguous, and
+/// deliberately unlike any other literal in the tree.
+const USER: &str = "alice";
+const PASS: &str = "segredo-do-ollama";
+
+/// `host:port` of a `http://…` base URL, so an assertion can name the endpoint
+/// without hardcoding a port — `support::closed_port_url` hands back whatever
+/// ephemeral port the OS picked.
+fn host_port(base_url: &str) -> String {
+    base_url
+        .strip_prefix("http://")
+        .expect("loopback base url")
+        .to_string()
+}
+
+// ------------------------------------------------------------ redact_url --
+
+#[test]
+fn redact_url_removes_the_password_and_keeps_scheme_host_and_port() {
+    assert_eq!(
+        redact_url("http://user:pass@host:11434"),
+        "http://***@host:11434/"
+    );
+}
+
+#[test]
+fn redact_url_removes_a_username_that_has_no_password() {
+    // Not secret on its own, but it is an account name, and collapsing both
+    // shapes to one marker keeps the log honest about what was removed.
+    assert_eq!(redact_url("http://user@host:11434"), "http://***@host:11434/");
+}
+
+#[test]
+fn redact_url_removes_a_password_whose_at_and_colon_are_percent_encoded() {
+    // `%40` and `%3A` are the *correct* encoding of `@` and `:` inside a
+    // password, and a splitter looking for a literal `@` or `:` downstream of
+    // the authority start is looking for characters that are not there.
+    assert_eq!(
+        redact_url("http://user:se%40gredo:p%3Aa%2Fss@host:11434"),
+        "http://***@host:11434/"
+    );
+    assert!(!redact_url("http://user:se%40gredo:p%3Aa%2Fss@host:11434").contains("se"));
+}
+
+#[test]
+fn redact_url_removes_a_multibyte_credential() {
+    // Percent-encoded by the parser, so any byte-index arithmetic on the raw
+    // string would land mid-codepoint.
+    let out = redact_url("http://usér:séçrètø@host:11434");
+    assert_eq!(out, "http://***@host:11434/");
+    assert!(!out.contains("séçrètø"), "multibyte password survived: {out}");
+}
+
+#[test]
+fn redact_url_removes_a_raw_at_inside_the_password_whole() {
+    // The authority boundary is the LAST raw `@`; earlier ones belong to the
+    // userinfo. `url::Url` agrees: `http://user:p@ss@host` is user `user`,
+    // password `p%40ss`, host `host`.
+    //
+    // So splitting on the *first* `@` — the "everything before the `@` is the
+    // credential" reading — redacts only `user` and would publish
+    // `p@ss@host:11434`. A password fragment is still a leak, and this case is
+    // the reason the implementation is a parser and not a `split_once`.
+    let out = redact_url("http://user:p@ssTAIL@host:11434");
+    assert_eq!(out, "http://***@host:11434/");
+    assert!(!out.contains("TAIL"), "password fragment survived: {out}");
+}
+
+#[test]
+fn redact_url_removes_every_at_sign_in_a_multi_at_authority() {
+    // Generalisation of the case above: three raw `@`s, so the userinfo is
+    // `a@b@c` and only the final `@` is the boundary.
+    let out = redact_url("http://a@bTAIL@c@host:11434");
+    assert_eq!(out, "http://***@host:11434/");
+    assert!(!out.contains("TAIL"), "password fragment survived: {out}");
+}
+
+#[test]
+fn redact_url_leaves_a_url_without_userinfo_byte_identical() {
+    // Byte-identical, not merely equivalent: the credential-free case must not
+    // pick up the parser's normalisation (`http://h:1` → `http://h:1/`), or every
+    // log line in a deployment without Ollama auth would change for no reason.
+    for u in [
+        "http://localhost:11434",
+        DEFAULT,
+        "http://host:11434/proxy/ollama",
+        "https://ollama.example:443/api",
+        "http://host:11434/?x=1#frag",
+    ] {
+        assert_eq!(redact_url(u), u, "a credential-free URL must not be touched");
+    }
+}
+
+/// The documented default, spelled out so the "unchanged" case above cannot be
+/// satisfied by a constant that happens to be the same string.
+const DEFAULT: &str = "http://localhost:11434";
+
+#[test]
+fn redact_url_leaves_ipv6_without_userinfo_byte_identical() {
+    // The brackets are not userinfo, and a splitter that treats the first `:` as
+    // the userinfo/host boundary would eat the address.
+    for u in ["http://[::1]:11434", "http://[fe80::1%25eth0]:11434"] {
+        assert_eq!(redact_url(u), u);
+    }
+}
+
+#[test]
+fn redact_url_removes_userinfo_in_front_of_ipv6() {
+    let out = redact_url("http://user:p@[::1]:11434");
+    assert_eq!(out, "http://***@[::1]:11434/");
+    assert!(!out.contains("p@"));
+}
+
+#[test]
+fn redact_url_keeps_path_and_query_while_removing_the_credential() {
+    // `BRAIN_OLLAMA_URL` legitimately carries a path prefix (a reverse proxy in
+    // front of Ollama), and that path is diagnostic: it says which proxy.
+    let out = redact_url("http://user:pass@proxy.example:8080/ollama/v1?tag=prod");
+    assert_eq!(out, "http://***@proxy.example:8080/ollama/v1?tag=prod");
+}
+
+#[test]
+fn redact_url_leaves_an_unparseable_string_without_userinfo_alone() {
+    for u in [
+        "",
+        "not a url",
+        "http://",
+        "http://h:99999", // port out of range — rejected by the parser
+        "http:///api/embeddings",
+        "localhost:11434", // parses as scheme "localhost", no authority
+    ] {
+        assert_eq!(
+            redact_url(u),
+            u,
+            "nothing to redact in {u:?}, so it must come back untouched"
+        );
+    }
+}
+
+#[test]
+fn redact_url_removes_a_credential_from_an_unparseable_url() {
+    // The backstop. `Url::parse` rejects an out-of-range port, so the parser
+    // path never runs and a typo'd `BRAIN_OLLAMA_URL` with a password in it is
+    // the case that would otherwise print verbatim.
+    assert_eq!(
+        redact_url("http://user:pass@host:99999"),
+        "http://***@host:99999"
+    );
+    // The parser's normalising trailing `/` never appears here: the backstop
+    // splices the original text, so the endpoint stays recognisable.
+    assert!(!redact_url("http://user:pass@host:99999").ends_with('/'));
+}
+
+#[test]
+fn redact_url_backstop_does_not_leave_a_password_fragment_behind() {
+    // Same trap as the parsed case, in the backstop: the `@` that ends the
+    // authority is the LAST one, and everything before it is the credential.
+    let out = redact_url("http://user:p@ssTAIL@host:99999");
+    assert_eq!(out, "http://***@host:99999");
+    assert!(!out.contains("TAIL"), "password fragment survived: {out}");
+}
+
+#[test]
+fn redact_url_is_idempotent() {
+    // Re-redacting an already-redacted URL must not stack markers, and must not
+    // decide `***` is a username worth redacting.
+    for u in [
+        "http://user:pass@host:11434",
+        "http://user@host:11434",
+        "http://host:11434",
+        "http://user:p@ss@host:99999",
+    ] {
+        let once = redact_url(u);
+        assert_eq!(redact_url(&once), once, "redaction is not idempotent for {u:?}");
+    }
+}
+
+// -------------------------------------------------- the property, end to end --
+
+#[tokio::test]
+async fn embed_error_does_not_leak_the_ollama_credential() {
+    // The real leak. `embed()` names the target URL in the error context
+    // because callers degrade to FTS-only and the message is the only diagnostic
+    // left; the credential in it is what must not survive.
+    let closed = support::closed_port_url().await;
+    let host_port = host_port(&closed);
+    let eng = EmbeddingEngine::new(credentialed(&closed, USER, PASS), MODEL.into());
+    let err = eng.embed("hello").await.expect_err("closed port must refuse");
+
+    // `{:#}` is the whole chain — the strictest thing any consumer prints, and
+    // what `brain-mcp` reaches for on the query-embed fallback path.
+    let chain = format!("{err:#}");
+    assert!(!chain.contains(PASS), "password reached the error: {chain}");
+    assert!(!chain.contains(USER), "username reached the error: {chain}");
+    assert!(chain.contains("***@"), "expected the redaction marker: {chain}");
+    // The diagnosability the code comment exists to protect.
+    assert!(chain.contains(&host_port), "host:port lost: {chain}");
+    assert!(chain.contains("/api/embeddings"), "endpoint lost: {chain}");
+}
+
+#[tokio::test]
+async fn embed_error_on_a_real_refused_host_keeps_the_host_and_port() {
+    // The regression guard for the *other* half of the fix. If someone "solves"
+    // the leak by dropping the URL, this fails: the whole reason the URL is
+    // there is that a silent FTS-only fallback is undiagnosable without it.
+    let closed = support::closed_port_url().await;
+    let host_port = host_port(&closed);
+    let eng = EmbeddingEngine::new(closed, MODEL.into());
+    let err = eng.embed("hello").await.expect_err("closed port must refuse");
+    let msg = err.to_string();
+    assert!(msg.contains(&host_port), "host:port lost: {msg}");
+    assert!(msg.contains("/api/embeddings"), "endpoint lost: {msg}");
+}
+
+#[tokio::test]
+async fn redact_reqwest_error_removes_a_credential_the_error_really_carries() {
+    // Characterisation plus property, in that order, and the order matters.
+    //
+    // A *normal* reqwest failure does NOT carry the credential: `RequestBuilder`
+    // moves the URL's userinfo into an `Authorization` header and strips it from
+    // the `Url` before the request is built, so `Error::url()` is already clean
+    // and `{e}` is safe by accident. The one reqwest path that skips that is a
+    // redirect: the `Location` target is parsed straight out of the header and
+    // attached to the error without going through the stripping, so its
+    // `Display` really does contain the password.
+    //
+    // The first assertion states that precondition. If a future reqwest closes
+    // the redirect hole too, this test fails loudly and the redaction can be
+    // revisited — as opposed to passing vacuously.
+    let mock = Mock::start(Plan {
+        redirect: Some(format!("ftp://{USER}:{PASS}@elsewhere.example/")),
+        ..Default::default()
+    })
+    .await;
+    let err = reqwest::Client::new()
+        .get(format!("{}/api/tags", mock.base_url))
+        .send()
+        .await
+        .expect_err("a non-http(s) redirect target is rejected");
+
+    assert!(
+        err.to_string().contains(PASS),
+        "precondition: reqwest's own Display no longer carries the credential, so \
+         this path can no longer prove redaction. Message was: {err}"
+    );
+
+    let mut err = err;
+    redact_reqwest_error(&mut err);
+    let redacted = err.to_string();
+    assert!(!redacted.contains(PASS), "password survived: {redacted}");
+    assert!(!redacted.contains(USER), "username survived: {redacted}");
+    assert!(redacted.contains("elsewhere.example"), "host lost: {redacted}");
+}
+
+// --------------------------------------------------- stderr, the real sink --
+//
+// `eprintln!` writes to the process's fd 2, and there is no std-only way to
+// swap that out from under the test, so these two cases re-execute the test
+// binary as a child with `Command` and read its piped stderr. The child half is
+// a no-op unless [`CHILD_ENV`] selects a case, so a normal `cargo test` run pays
+// one extra process per case and nothing else.
+
+/// Selects the child's case; unset means "this is the parent, do nothing".
+const CHILD_ENV: &str = "BRAIN_TEST_REDACT_URL_CHILD";
+
+/// Child half of the two cases below. Run with `--exact` and the env var set;
+/// without them it returns immediately, which is what a plain `cargo test` does.
+#[test]
+fn stderr_capture_child() {
+    let Ok(case) = std::env::var(CHILD_ENV) else { return };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("child runtime");
+    rt.block_on(async {
+        match case.as_str() {
+            // A refused connection with a credentialed base URL.
+            "health" => {
+                let closed = support::closed_port_url().await;
+                let eng = EmbeddingEngine::new(credentialed(&closed, USER, PASS), MODEL.into());
+                assert!(!eng.health_check().await, "closed port must be unhealthy");
+            }
+            // A redirect whose target carries the credential — the reqwest path
+            // that genuinely leaks through `Display`.
+            "health-redirect" => {
+                let mock = Mock::start(Plan {
+                    redirect: Some(format!("ftp://{USER}:{PASS}@elsewhere.example/")),
+                    ..Default::default()
+                })
+                .await;
+                let eng = mock.engine();
+                assert!(!eng.health_check().await, "bad-scheme redirect must be unhealthy");
+            }
+            other => panic!("unknown child case {other:?}"),
+        }
+    });
+}
+
+fn capture_child_stderr(case: &str) -> String {
+    let exe = std::env::current_exe().expect("path of the running test binary");
+    let out = Command::new(exe)
+        .args(["--exact", "stderr_capture_child", "--nocapture", "--test-threads=1"])
+        .env(CHILD_ENV, case)
+        .output()
+        .expect("re-run the test binary as a child to capture its stderr");
+    assert!(
+        out.status.success(),
+        "child case {case:?} failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn health_check_stderr_does_not_leak_a_refused_credential() {
+    // The refused-connection case is the one where reqwest's own `Display` is
+    // already credential-free, because a normal request has its userinfo moved
+    // into an `Authorization` header before the error is built. It is here as the
+    // cheap invariant, not as the proof; `…_redirected_credential` below is the
+    // discriminating one.
+    let stderr = capture_child_stderr("health");
+    assert!(
+        stderr.contains("ollama unreachable"),
+        "the child should have logged an unreachable Ollama: {stderr}"
+    );
+    assert!(!stderr.contains(PASS), "password reached stderr: {stderr}");
+    assert!(
+        stderr.contains("127.0.0.1:"),
+        "the host must stay so the failure is diagnosable: {stderr}"
+    );
+}
+
+#[test]
+fn health_check_stderr_does_not_leak_a_redirected_credential() {
+    // The discriminating case. Without the redaction this line reads
+    // `builder error for url (ftp://alice:segredo-do-ollama@elsewhere.example/)`,
+    // and nothing in the code under test ever formats that URL by hand — reqwest's
+    // own `Display` carries it.
+    let stderr = capture_child_stderr("health-redirect");
+    assert!(
+        stderr.contains("ollama unreachable"),
+        "the child should have logged an unreachable Ollama: {stderr}"
+    );
+    assert!(!stderr.contains(PASS), "password reached stderr: {stderr}");
+    assert!(
+        stderr.contains("elsewhere.example"),
+        "the host must stay so the failure is diagnosable: {stderr}"
+    );
+}

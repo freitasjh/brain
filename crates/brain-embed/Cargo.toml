@@ -1,0 +1,18 @@
+[package]
+name = "brain-embed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+brain-core = { path = "../brain-core" }
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+
+[dev-dependencies]
+# Local mock HTTP server for the test harness. Same major version already used
+# by brain-mcp/brain-web, so no new transitive dependency enters the workspace.
+axum = { version = "0.7", features = ["json"] }

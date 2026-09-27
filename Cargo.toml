@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/brain-core",
+    "crates/brain-store",
+    "crates/brain-embed",
+    "crates/brain-mcp",
+    "crates/brain-web",
+    "crates/brain-cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+authors = ["brain"]
+license = "MIT"
+rust-version = "1.85"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

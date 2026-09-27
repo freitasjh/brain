@@ -1,0 +1,51 @@
+[package]
+name = "brain-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+brain-core = { path = "../brain-core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+bytemuck = "1"
+
+[dev-dependencies]
+# C3-01 SPIKE (TD-001) — sqlite-vec viability probe for the O(n) cosine full scan.
+# Deliberately a DEV-dependency: not used by src/, only by examples/vec_spike.rs.
+# C3-02 promotes this to [dependencies] only if the go/no-go verdict is SIM.
+#
+# Why this crate works with our build:
+#   - build.rs compiles the sqlite-vec C amalgamation with `cc` into a static
+#     `sqlite_vec0` archive. No feature flags, no `loadable_extension`, no
+#     custom `libsqlite3-sys` build, so rusqlite's `bundled` strategy is untouched
+#     and brain-mcp/brain-web/brain-cli keep linking exactly as before.
+#   - It exposes only `sqlite3_vec_init`, registered process-globally via
+#     rusqlite's `sqlite3_auto_extension()` BEFORE any `Connection::open()`.
+#     That is compatible with brain's per-request `Store::open()` model.
+#
+# VERSION PIN — DO NOT BUMP to 0.1.10-alpha.* (measured, C3-01):
+#   sqlite-vec 0.1.10-alpha.{1,2,3,4} are published BROKEN. Their build.rs only
+#   compiles sqlite-vec.c, but that amalgamation grew #include "sqlite-vec-diskann.c",
+#   "sqlite-vec-ivf.c", "sqlite-vec-ivf-kmeans.c" and "sqlite-vec-rescore.c" — and those
+#   4 files are NOT shipped in the .crate tarball. Result: hard `cc` failure,
+#   "sqlite-vec-diskann.c: No such file or directory", exit status 1.
+#   0.1.9 is the newest STABLE release whose tarball is self-contained AND which
+#   already supports both `distance_metric=cosine` and partition/metadata columns.
+sqlite-vec = { version = "=0.1.9" }
+
+# C3-01 SPIKE (TD-001) — int8 quantisation experiment (G9 variants C/D).
+#
+# `rusqlite::functions` is behind the `functions` feature, which is NOT enabled
+# in [dependencies] above and must stay that way: enabling it there would
+# change the feature set of the crate that brain-mcp / brain-web / brain-cli
+# link against. Declaring it as a dev-dependency keeps the union scoped to
+# `cargo test` / `cargo run --example`, so production builds are untouched.
+#
+# CAVEAT if C3-02 ever wants int8 in production: feature unification means this
+# would then have to move into [dependencies] for every consumer. Flagged in the
+# C3-01 report rather than discovered during C3-02.
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+
