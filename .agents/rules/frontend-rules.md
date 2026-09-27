@@ -1,81 +1,20 @@
-# Frontend Rules
+# Frontend Rules — viewer (brain-web)
 
-## Code Style
-- Always `<script setup lang="ts">` — no Options API
-- Pinia stores use the Composition API style (setup stores), not Options stores
-- Components go under `src/components/<domain>/`, views under `src/views/`
-- API calls live in `src/services/api.ts`, not scattered across components
+## Viewer
+- Viewer é `viewer/index.html` estático + `crates/brain-web` axum `GET /api/status,search,read,list` read-only sobre `brain.db`
+- No Vue/Pinia/PrimeVue — não há SPA complexo nesta fase
+- Servir estático via `brain_web::router` + `axum::serve` em `brain serve --port 8322`
 
-## PrimeVue
-- Use PrimeVue 4 with the Aura theme
-- Import components globally in `main.ts` — no per-component imports
-- Use `PrimeVue.defineTheme()` for custom tokens if needed
+## No-SPA Rule (Fase A+B)
+- Fase C pode adicionar frontend dedicado; até lá, manter viewer minimal
 
-## State Management
-- Chat state: messages, loading, streaming flag → `useChatStore`
-- Agent/Tool config state → `useAgentStore`
-- No component-scoped reactive state for data that survives route changes
-
-## API Layer
-- All calls go through `api.ts` using `fetch` (no Axios needed)
-- Backend base URL from `import.meta.env.VITE_API_BASE` (default `/api`)
-- Types are manually defined in `src/services/api.ts`
-
-## Testing
-
-### Obrigatório — Todo desenvolvimento DEVE incluir testes
-
-### Testes Unitários (Vitest + Vue Testing Library)
-- Toda **store (Pinia)** deve testar:
-  - Actions (chamadas à API, mutations no state)
-  - Getters (cálculos derivados do state)
-  - Estado inicial e após mutações
-- Toda **view/página** deve testar:
-  - Renderização com dados mockados
-  - Interações do usuário (cliques, submissão de formulários)
-  - Estados de loading, vazio e erro
-- Todo **serviço API** deve testar:
-  - Chamadas HTTP (método, URL, headers, body)
-  - Tratamento de erros (timeout, 4xx, 5xx)
-  - Parsing de resposta JSON
-
-### Testes de Componente
-- Renderização com diferentes props
-- Eventos emitidos (`emitted()`)
-- Slots e conteúdo condicional
-- Integração com PrimeVue componentes
-
-### Estrutura de Testes
-```
-src/
-├── components/__tests__/
-│   └── ChatMessage.test.ts
-├── views/__tests__/
-│   └── LoginView.test.ts
-├── stores/__tests__/
-│   └── chatStore.test.ts
-└── services/__tests__/
-    └── api.test.ts
-```
-
-### Cobertura
-- Mínima **70%** nas novas funções/componentes
-- Verificar com: `npx vitest --coverage`
-- Não aceitar cobertura abaixo do mínimo
-
-### Execução
-```bash
-npx vitest                    # unit tests (watch mode)
-npx vitest run                # unit tests (single run)
-npx vitest --coverage          # unit tests + coverage report
-```
-- Os testes DEVEM passar antes de qualquer commit
+## Testing (se viewer evoluir)
+- Teste axum handler via `cargo test -p brain-web` com `tower::ServiceExt::oneshot`
+- Validar `/api/search?query=foo&top_k=5` → 200 JSON `results[]`, `/api/list` → entries
 
 ## Exact Commands
 ```bash
-npm install     # first time
-npm run dev     # dev server on :5173, proxies /api to backend
-npm run build   # production build → dist/
-npm run lint    # eslint + prettier check
-npm run typecheck  # vue-tsc --noEmit
+cargo run -p brain-cli -- serve --port 8322
+curl "http://localhost:8322/api/status" | jq
+curl "http://localhost:8322/api/search?query=test&top_k=5"
 ```

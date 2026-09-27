@@ -8,3 +8,20 @@ wheels/
 
 # Virtual environments
 .venv
+
+
+# Rust
+/target
+/data/brain.db
+/data/brain.db-*
+/tmp/brain-export
+/tmp/brain-test.db
+
+# Added by cargo
+
+/target
+
+# opencode local tooling: node_modules is 63 MB / 3648 files of vendored JS
+# and must never be versioned. package.json, package-lock.json and plugins/
+# stay tracked.
+/.opencode/node_modules/

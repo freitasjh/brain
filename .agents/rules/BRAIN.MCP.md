@@ -43,10 +43,21 @@ Quando o Brain MCP está configurado, os agentes têm acesso a estas tools:
 
 | Tool | Descrição | Quando usar |
 |------|-----------|-------------|
-| `brain_search(query, layer?, scope?, top_k?)` | Busca semântica por embedding | **ANTES** de codificar |
-| `brain_store(layer, path, content, scope?)` | Salva nota markdown + indexa | **APÓS** decisões |
-| `brain_read(layer, path, scope?)` | Lê nota completa do vault | Quando precisar do conteúdo completo |
-| `brain_reindex(all?, layer?, path?)` | Reconstrói índice vetorial | Raramente — após alterações manuais |
+| `brain_search(query, layer?, scope?, project?, tag?, top_k?, explain?)` | Híbrido FTS5+vector RRF k60 + entity+graph | **ANTES** de codificar |
+| `brain_store(layer, path, content, scope?, project?, tags?, pinned?, expires_at?)` | Salva SQLite + FTS5+vec | **APÓS** decisões |
+| `brain_read(layer, path, scope?)` | Lê SQLite `notes.path` | Quando precisar do conteúdo |
+| `brain_delete_page(path)` | Delete hard | Ao remover |
+| `brain_recent(top_k?)` | Últimas `updated_at DESC` | Handoff |
+| `brain_status` | `{notes,chunks,projects}` | Diagnóstico |
+| `brain_checkpoints(limit?)` | Audit log | Time-travel |
+| `brain_restore_page(id)` | Restore audit | Undo |
+| `brain_backup(to?)` | `cp brain.db` → `{db}.bak`, ou um `*.bak` dentro de `BRAIN_EXPORT_ROOT` | Backup (destino contido por allowlist) |
+| `brain_export(to?, force?)` | Dump dentro de `BRAIN_EXPORT_ROOT` (default `/tmp/brain-export`) | Export debug — `to` fora da raiz é recusado |
+| `brain_forget_sweep(dry_run?)` | TTL sweep | Limpeza |
+| `brain_reindex(all?, layer?, path?)` | Reconstrói FTS5+vec | Raramente |
+| `brain_project_*` | CRUD projeto/link | Projetos |
+| `brain_migrate` | Import vault legado | Migração |
+| `brain serve --port` | Viewer 8322 `/api/*` | Web |
 
 ### Parâmetros
 

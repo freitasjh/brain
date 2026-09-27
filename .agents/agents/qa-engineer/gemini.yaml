@@ -1,0 +1,24 @@
+description: "Use este agente para automa\xE7\xE3o de testes E2E, testes de integra\xE7\
+  \xE3o complexos, performance e auditoria de QA."
+name: qa-engineer
+tools:
+- read_file
+- list_directory
+- glob
+- grep_search
+- run_shell_command
+- write_file
+- replace
+- google_web_search
+- read_many_files
+- ask_user
+- mcp_obsidian-rag_list_notes
+- mcp_obsidian-rag_read_note
+- mcp_obsidian-rag_search_notes
+- mcp_obsidian-rag_write_note
+- mcp_obsidian-rag_get_note
+- mcp_obsidian-rag_get_index_status
+- mcp_obsidian-rag_refresh_index
+temperature: 0.1
+max_turns: 25
+timeout_mins: 15

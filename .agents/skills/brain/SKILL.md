@@ -113,6 +113,32 @@ brain_store(
 
 **Scope obrigatório:** `arquitetura` e `regras` e `estudos` exigem `scope="projetos"` ou `scope="global"`
 
+**Retorno:** `{ok, path, chunks, embedded, without_embedding, queued}`
+
+| Campo | Significado |
+|-------|-------------|
+| `chunks` | chunks que a nota gerou |
+| `embedded` | chunks **já** com vetor (0 numa nota nova) |
+| `without_embedding` | chunks `NULL`, aguardando vetor |
+| `queued` | dívida de embedding enfileirada para background |
+
+O vetor **não** é síncrono (US-02.7): a nota e seu índice FTS5 estão gravados
+quando a chamada retorna, e os vetores chegam em background. Se a busca
+semântica não achar a nota de imediato, isso é o motivo — releia
+`brain_status` e veja `embedding.coverage.embedding_coverage_pct`.
+
+**Limites de escrita** (rejeição *antes* de qualquer embed, erro nomeando o
+limite):
+
+| Limite | Valor | Exceder |
+|--------|-------|---------|
+| `MAX_CONTENT_BYTES` | 256 KiB | `INVALID_PARAMS: content too large` |
+| `MAX_CHUNKS` | 64 (uma seção `## ` = 1 chunk) | `INVALID_PARAMS: content splits into N chunks` |
+
+Um chunk custa ~0.045 s para embedar e o Ollama serve **um por vez**, então os
+limites existem para que uma nota não vire trabalho de minutos. Se bater, divida
+em várias notas sob o mesmo projeto ou una as seções pequenas.
+
 ### `brain_read(layer, path, [scope])`
 
 Lê uma nota completa do vault.
@@ -129,20 +155,56 @@ brain_read("regras", "coding-standards", scope="global")
 brain_read("sessoes", "meu-projeto/2026-07-25")
 ```
 
-### `brain_reindex(all, [layer], [path])`
+### `brain_status()`
 
-Reconstrói o índice de embeddings (parcial ou total).
+Contagens + a saúde do índice de embeddings.
 
-```python
-# Reindexar tudo
-brain_reindex(all=True)
-
-# Reindexar apenas uma camada
-brain_reindex(layer="regras")
-
-# Reindexar arquivo específico
-brain_reindex(path="regras/meu-projeto/naming-conventions")
+```json
+{
+  "notes": 253, "chunks": 821, "projects": 6,
+  "embedding": {
+    "coverage": {
+      "chunks_total": 821, "chunks_embedded": 821,
+      "chunks_without_embedding": 0, "chunks_zero_vector": 0,
+      "embedding_coverage_pct": 100.0
+    },
+    "ollama": { "reachable": true, "model": "nomic-embed-text" }
+  }
+}
 ```
+
+`embedding_coverage_pct` é **o sinal de fila travada**: chunk esperando vetor conta
+como `without_embedding`, nunca como `zero_vector`. Um `zero_vector > 0` é um
+estado corrompido herdado (BLOB de zeros que scoreia 0.0 para toda query) e
+precisa de `brain reindex --all`.
+
+### Reindex — `brain reindex --all [--no-embed]` (CLI, não é tool MCP)
+
+Reconstroi chunks + embeddings. **Roda em foreground** (a passagem de embed de um
+corpo grande leva minutos) e é **não destrutivo**: nunca `DELETE FROM chunks`, e
+reaproveita o vetor de todo chunk cujo texto continua igual.
+
+```bash
+brain reindex --all              # reindexa + embeda o que falta
+brain reindex --all --no-embed   # só a parte estrutural; novos chunks ficam NULL
+```
+
+```
+REINDEX_DONE notes=253 chunks=821 embedded=821 preserved=814 rehydrated=7              null=0 diverged=0 stale_reused=0 unmatched=0
+```
+
+| Token | Significado |
+|-------|-------------|
+| `preserved` | vetores que sobreviveram do run anterior |
+| `rehydrated` | vetores recuperados nesta passagem |
+| `null` | chunks sem vetor — **precisa de outro run** |
+| `diverged` | vetor calculado de texto que a nota já não tem; **não** foi aplicado (nota editada durante o run). Sai `REINDEX_DIVERGED` |
+| `stale_reused` | vetores mantidos por similaridade. **Default `1.0` (exato)**: só aparece com opt-in `BRAIN_REUSE_SIMILARITY=0.9`. A guarda de força normativa (obrigação ↔ proibição) bloqueia o reuso **independentemente** desse threshold |
+| `unmatched` | vetores perdidos: o texto mudou demais para reaproveitar |
+
+Linhas extras: `REINDEX_PARTIAL` (há `null > 0`) e `REINDEX_DIVERGED` (há
+`diverged > 0`). Se outro embed segura o lock (a fila do servidor), o comando
+falha sem escrever nada — é para não duplicar trabalho.
 
 ## Boas práticas para agentes
 

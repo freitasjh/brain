@@ -1,0 +1,24 @@
+name: sdd-orquestrador
+description: Deterministic Architectural Compiler & Engineering Manager v5.0. Especializado em gestão de estado de workflow, integridade de grafos de execução e automação de esteira SDD.
+kind: local
+tools:
+  - read_file
+  - write_file
+  - replace
+  - list_directory
+  - glob
+  - grep_search
+  - google_web_search
+  - read_many_files
+  - ask_user
+  - web_fetch
+- mcp_obsidian-rag_list_notes
+- mcp_obsidian-rag_read_note
+- mcp_obsidian-rag_search_notes
+- mcp_obsidian-rag_write_note
+- mcp_obsidian-rag_get_note
+- mcp_obsidian-rag_get_index_status
+- mcp_obsidian-rag_refresh_index
+model: gemini-3-flash-preview
+temperature: 0.1
+max_turns: 50

@@ -1,21 +1,21 @@
-# Database Rules
+# Database Rules — SQLite WAL
 
-## Naming Conventions
-- Tables: `snake_case` plural (`agents`, `tools`, `conversations`, `messages`)
-- Columns: `snake_case` (`created_at`, `agent_id`, `tool_name`)
-- Primary keys: `id BIGINT AUTO_INCREMENT`
-- Foreign keys: `<referenced_table_singular>_id` (`agent_id`, `conversation_id`)
-- Join table: `agent_tools` (agent_id, tool_id + PK)
+## Schema
+- `notes(id PK, path UNIQUE, layer, scope, content, project_id FK, tags JSON, pinned BOOL, expires_at TEXT, version INT, created_at, updated_at)` `idx_notes_layer/scope/expires/project`
+- `chunks(id PK, note_id FK CASCADE, path, layer, scope, snippet, chunk_index, total_chunks, project_id, tags JSON, embedding BLOB)` `idx_chunks_path/layer`
+- `notes_fts(title, body)` FTS5 `porter unicode61` + triggers `notes_fts_insert/delete/update` (plain table, DELETE WHERE rowid)
+- `projects(id PK, name UNIQUE, description, created_at)`
+- `links(from_path, to_path)` wikilink `[[ ]]`
+- `entities(name UNIQUE, normalized)` + `entity_links(entity_id, note_id)`
+- `audit_log(id, action, path, prev_content, at)` checkpoints
+- `_meta(key PK, value)` `version=4, embedding_dim=768`
 
-## Migration Rules
-- Never edit a migration that has already been applied
-- Name files: `V<version>__<descriptive_name>.sql`
-- Always include both `CREATE` and `CREATE INDEX` in the same migration
-- Use `AFTER` and `NOT NULL` with defaults explicitly
+## WAL
+- `PRAGMA journal_mode=WAL; foreign_keys=ON; synchronous=NORMAL`
+- Single `Store {conn}` owns DB; `init_schema` create if not exists, `DROP TRIGGER IF EXISTS` before create to handle legacy
 
-## Key Tables
-- `agents` — type, name, model_config (JSON), system_prompt, active
-- `tools` — name, description, method_signature (JSON schema), enabled
-- `agent_tools` — many-to-many join
-- `conversations` — agent_id, title, created_at, updated_at
-- `messages` — conversation_id, role (USER/ASSISTANT/TOOL), content, tokens, created_at
+## Migrations
+- No Flyway files — `SCHEMA_VERSION` 4 bump 4→5 via `init_schema` + `ALTER TABLE` if needed (see `brain-store/src/lib.rs:72`)
+- Never edit applied live DB; bump version and add migration branch `if cols missing then ALTER`
+
+## No MySQL agents/tools tables — archived

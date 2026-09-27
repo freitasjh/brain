@@ -1,84 +1,38 @@
-# Backend Rules
+# Backend Rules — Rust
 
 ## Code Style
-- Use records for DTOs
-- **Lombok** Esta proibido o uso, não deve ser utilizado.
-  - Alternativa: escrever construtores, getters e setters manualmente, ou usar `record` para DTOs.
-- Services inject repositories, never the other way
-- Controllers are thin — delegate to services
-- Package by feature (`agent`, `chat`, `tool`), not by layer
+- `brain-core` no IO: pure types + validate + sanitize + chunk
+- `brain-store` single `Store {conn}` WAL owns DB; `init_schema` SCHEMA_VERSION, triggers FTS
+- `brain-embed` rustls, `chunk_text` split by `## `, `embed_batch_concurrent(4)`
+- `brain-mcp` rmcp tools + `sanitize_relative_path`; handlers thin, delegate to Store
+- `brain-web` axum `AppState{db:String}` open per request (avoid !Sync), read-only
+- `brain-cli` clap derive, `BRAIN_DB_PATH` env, `full_path` validate scope
 
-## LangChain4j
-- Tools are Spring `@Component` classes with `@Tool`-annotated methods
-- Agent creation uses `AiServices.builder(interface.class).chatLanguageModel(model).tools(...).build()`
-- Store `ChatMemory` per conversation in DB via `ChatMemoryStore` interface
-
-## Flyway
-- Never disable Flyway in production
-- Dev profiles may use `flyway.baseline-on-migrate: true`
-- All schema changes go through migration files in `db/migration/`
+## No Java/LangChain4j/Flyway/Lombok
 
 ## Testing
 
 ### Obrigatório — Todo desenvolvimento DEVE incluir testes
 
-### Testes Unitários (JUnit 5 + Mockito)
-- Todo **service** deve ter teste unitário:
-  - Fluxo principal (happy path)
-  - Fluxos de erro (validações, entidade não encontrada, conflitos)
-  - Casos de borda (edge cases)
-- Todo **controller** deve testar:
-  - HTTP status codes (200, 201, 400, 401, 404, 500)
-  - Validação de entrada (`@Valid`, `@NotNull`, etc.)
-  - Serialização JSON (resposta igual ao DTO esperado)
-- Todo **JwtService** / utilitário crítico deve ter teste unitário
-- Use Mockito para mockar dependências: `@ExtendWith(MockitoExtension.class)`
+### Unit (`cargo test -p brain-core|brain-store`)
+- `brain-core`: validate_layer/scope, sanitize traversal, frontmatter, chunk ##, wikilink
+- `brain-store`: in-mem `Store::open_in_memory()` CRUD notes/chunks, FTS insert/delete, search RRF, TTL `forget_sweep`, audit `checkpoints/restore`, project CRUD, `cargo test -- --nocapture`
+- Mock Ollama: `embed` não deve exigir Ollama real; fallback vec `[0.0;768]` para FTS-only
 
-### Testes de Integração (Testcontainers + MySQL real)
-- Toda **repository** deve ter teste de integração:
-  - Validar SQL nativo e queries do Spring Data
-  - Operações CRUD completas
-  - Constraints (unique, foreign key, not null)
-- Todo **fluxo completo (controller → service → repository)** deve ter pelo menos 1 teste de integração
-- Configuração padrão:
-  ```java
-  @SpringBootTest
-  @AutoConfigureTestDatabase(replace = NONE)
-  @Testcontainers
-  ```
-- Use `@DynamicPropertySource` para configurar datasource do container MySQL
-- `application-test.properties` ou `@TestPropertySource` para configs específicas
-
-### Estrutura de Testes
-```
-src/test/java/com/chatbot/
-├── auth/
-│   ├── AuthServiceTest.java          // unitário
-│   ├── AuthControllerTest.java       // unitário (MockMvc)
-│   └── AuthRepositoryIntegrationTest.java  // integração
-├── config/
-│   └── JwtServiceTest.java           // unitário
-└── exception/
-    └── GlobalExceptionHandlerTest.java    // unitário (MockMvc)
-```
+### Integration (`cargo test --workspace`)
+- `store → search → read → delete → export → backup → sweep` end-to-end
+- FTS + vector + entity + graph RRF k60 + authority boost
+- `cargo build --workspace` zero warnings, `cargo clippy -- -D warnings`
 
 ### Cobertura
-- Mínima **80%** nas classes novas/alteredas
-- Verificar com Jacoco: `mvn verify -Pintegration-test`
-- Não aceitar cobertura abaixo do mínimo — criar testes até atingir
-
-### Execução
-```bash
-sdk use java 21.0.10-zulu         # Java 21 obrigatório
-mvn test                          # unit tests only (exclui *IntegrationTest)
-mvn verify -Pintegration-test     # unit + integration tests (requer Docker)
-```
-- Os testes DEVEM passar antes de qualquer commit
+- Mín 70% `cargo llvm-cov --workspace --html`
+- `cargo test --workspace` DEVE passar antes de commit
 
 ## Exact Commands
 ```bash
-sdk use java 21.0.10-zulu         # sempre trocar para Java 21 primeiro
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
-mvn test                          # unit tests
-mvn verify -Pintegration-test     # full checks (requer Docker)
+cargo test -p brain-core -- --nocapture
+cargo test --workspace
+cargo build --workspace   # release: --release (LTO thin)
+cargo clippy --workspace -- -D warnings
+cargo llvm-cov --workspace --html
 ```
