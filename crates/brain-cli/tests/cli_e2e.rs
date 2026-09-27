@@ -9,9 +9,22 @@ fn db(tag: &str) -> String {
     format!("/tmp/brain-cli-e2e-{}-{}.db", std::process::id(), tag)
 }
 
+/// Runs the shipped binary once, against a dead Ollama.
+///
+/// The URL is set **explicitly** rather than left to the ambient environment. It
+/// used to be inherited, which meant a `store` embedded inline against whatever
+/// real model the machine happened to be running — the second half of the same
+/// flake `Server::spawn` had (see there for the measurement), and a worse version
+/// of it, because a developer's shell export could change a test's outcome. A
+/// refused connection is also instant, where a real cold model is not.
+///
+/// Nothing in this file asserts on embedding: the checks read note content,
+/// `/api/status`, and FTS-fallback searches. Tests that want a real backend build
+/// their own `Command` with their own URL (a mock, or `DEAD_OLLAMA`).
 fn run(db: &str, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(bin());
     cmd.arg("--db").arg(db);
+    cmd.env("BRAIN_OLLAMA_URL", DEAD_OLLAMA);
     for a in args {
         cmd.arg(a);
     }
@@ -356,7 +369,26 @@ impl Server {
             .arg(sub)
             .arg("--port")
             .arg(port.to_string())
-            .env_remove("BRAIN_OLLAMA_URL")
+            // A dead Ollama, like the rest of this suite. This used to be
+            // `env_remove("BRAIN_OLLAMA_URL")`, which does not mean "no Ollama" — it
+            // means the **default** Ollama, `http://localhost:11434`, i.e. whatever
+            // real model the developer happens to be running. That made this the only
+            // fixture in the file that talked to a real backend, and it was the 3-5%
+            // flake: `brain_search` embeds the query synchronously
+            // (`rmcp_service::embed_query`), bounded by a 30 s socket timeout, so
+            // every concurrently running test binary queued on the same single
+            // Ollama. Measured on this host, the `tools/call` round trip went from
+            // 0.141 s idle to **8.899 s** with the suite running, against a client
+            // window of 15 s — so a contended embed lands the response after the
+            // client has already asserted. Nothing is lost in transit; the client
+            // gives up first. Reproduced deterministically in
+            // `mcp_sse_window.rs`, which fails on purpose to keep the mechanism
+            // visible.
+            //
+            // Nothing here needs a real vector: the assertions read `/api/status`
+            // and an FTS-fallback search. A caller that genuinely wants a backend
+            // passes it in `env` and it wins, because that loop runs after this.
+            .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)
             .env_remove("BRAIN_EMBED_MAX_FAILURES")
             .stdout(std::fs::File::create(&outlog).expect("create the child's stdout file"))
             .stderr(std::fs::File::create(&errlog).expect("create the child's stderr file"));

@@ -45,8 +45,8 @@ pub struct Plan {
     pub short_dim: HashSet<String>,
     /// Prompts answered HTTP 200 with this exact body, bypassing every rule above.
     pub raw: HashMap<String, Value>,
-    /// When set, `GET /api/tags` answers 302 with this `Location` instead of
-    /// probing normally.
+    /// When set, **both** `GET /api/tags` and `POST /api/embeddings` answer 302
+    /// with this `Location` instead of doing their job.
     ///
     /// Exists to exercise reqwest's *redirect* path, which is a different code
     /// path from the request path and attaches a different URL to its errors:
@@ -54,6 +54,12 @@ pub struct Plan {
     /// through the userinfo stripping a normal request gets. So a redirect is
     /// the one way to get a `reqwest::Error` whose embedded URL still carries a
     /// credential.
+    ///
+    /// It used to apply to `GET /api/tags` only, which is a harness gap with a
+    /// real cost: `health_check` was testable against this vector and `embed` was
+    /// not, so the one sink that reaches journald on every `brain_search` had no
+    /// case exercising it and the leak shipped. A redirect fixture that only
+    /// covers half the sinks is a fixture that hides the half that matters.
     pub redirect: Option<String>,
 }
 
@@ -165,16 +171,8 @@ struct State0 {
 }
 
 async fn tags_handler(State(st): State<Arc<State0>>) -> Response {
-    if let Some(location) = &st.plan.redirect {
-        let Ok(value) = HeaderValue::from_str(location) else {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "bad redirect fixture").into_response();
-        };
-        return (
-            StatusCode::FOUND,
-            [(axum::http::header::LOCATION, value)],
-            "",
-        )
-            .into_response();
+    if let Some(r) = redirect_response(&st.plan) {
+        return r;
     }
     let status =
         StatusCode::from_u16(st.plan.tags_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -185,7 +183,20 @@ async fn tags_handler(State(st): State<Arc<State0>>) -> Response {
         .into_response()
 }
 
+/// The 302 the `redirect` plan describes, shared by both endpoints so the fixture
+/// cannot cover one sink and quietly skip the other.
+fn redirect_response(plan: &Plan) -> Option<Response> {
+    let location = plan.redirect.as_ref()?;
+    let Ok(value) = HeaderValue::from_str(location) else {
+        return Some((StatusCode::INTERNAL_SERVER_ERROR, "bad redirect fixture").into_response());
+    };
+    Some((StatusCode::FOUND, [(axum::http::header::LOCATION, value)], "").into_response())
+}
+
 async fn embed_handler(State(st): State<Arc<State0>>, body: Bytes) -> Response {
+    if let Some(r) = redirect_response(&st.plan) {
+        return r;
+    }
     let prompt = serde_json::from_slice::<Value>(&body)
         .ok()
         .and_then(|v| v.get("prompt").and_then(|p| p.as_str()).map(str::to_string))

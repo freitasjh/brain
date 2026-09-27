@@ -273,18 +273,206 @@ async fn redact_reqwest_error_removes_a_credential_the_error_really_carries() {
     assert!(redacted.contains("elsewhere.example"), "host lost: {redacted}");
 }
 
+// -------------------------------------------------- the sinks, end to end --
+//
+// Everything above is the policy. These are the four places the policy has to be
+// applied, and the two redirects below are the discriminating shape: a normal
+// reqwest failure carries a credential-free `Url` because `RequestBuilder` moved
+// the userinfo into an `Authorization` header, so a redacted-or-not assertion on
+// the common path can pass for the wrong reason.
+
+#[tokio::test]
+async fn embed_error_does_not_leak_a_redirected_credential() {
+    // 🔴 1. `embed()` is the hottest sink in the product: `brain-mcp`'s
+    // `embed_query` prints `{e:#}` — the **whole chain**, our error and our
+    // source — to stderr on every `brain_search` whose query embed fails, and
+    // stderr is journald. `embed()` redacted the URL it formatted and left the
+    // source alone, and the source is where `reqwest` puts the URL, so the
+    // password went to the log on the redirect path while the redaction marker
+    // did not appear at all — the operator saw neither the redaction nor a
+    // recognisable credential.
+    let mock = Mock::start(Plan {
+        redirect: Some(format!("ftp://{USER}:{PASS}@elsewhere.example/")),
+        ..Default::default()
+    })
+    .await;
+    let err = mock.engine().embed("hello").await.expect_err("a non-http redirect is rejected");
+    let chain = format!("{err:#}");
+    assert!(!chain.contains(PASS), "password reached the chain: {chain}");
+    assert!(!chain.contains(USER), "username reached the chain: {chain}");
+    assert!(chain.contains("***@"), "no redaction marker at all: {chain}");
+    // Host still named on **both** halves, so the fallback is diagnosable: the
+    // first half is this crate's message, the second is reqwest's.
+    assert!(chain.contains("elsewhere.example"), "host lost: {chain}");
+    assert!(chain.contains("/api/embeddings"), "endpoint lost: {chain}");
+}
+
+/// `BRAIN_OLLAMA_URL` with the scheme left off — what an operator gets by
+/// dropping the `http://` while copying a `curl -u user:pass host` line.
+///
+/// This one parses, as scheme `user`, with the credential in the *path* — so
+/// `username()` and `password()` both report nothing, and a policy that asked the
+/// parser "is there userinfo here?" answered "no" and printed verbatim.
+fn schemeless_base_url(base: &str, user: &str, pass: &str) -> String {
+    format!("{user}:{pass}@{}", base.strip_prefix("http://").expect("loopback base url"))
+}
+
+#[tokio::test]
+async fn embed_error_does_not_leak_a_credential_from_a_schemeless_base_url() {
+    // 🔴 2, on the real sink. Asserts the **absence of the password** and the
+    // **presence of the marker**, and deliberately not the exact string: the
+    // suite's habit of pinning the output shape is what let this through — the
+    // shape was always reasonable, it just was not redacted. The marker is
+    // asserted because a redacted credential has to stay distinguishable from a
+    // mangled hostname, and a message with no marker at all would be a silent
+    // mangling.
+    let closed = support::closed_port_url().await;
+    let eng = EmbeddingEngine::new(schemeless_base_url(&closed, USER, PASS), MODEL.into());
+    let err = eng.embed("hello").await.expect_err("a schemeless base url cannot be requested");
+    let chain = format!("{err:#}");
+    assert!(!chain.contains(PASS), "password reached the chain: {chain}");
+    assert!(!chain.contains(USER), "username reached the chain: {chain}");
+    assert!(chain.contains(REDACTION_MARKER), "no redaction marker at all: {chain}");
+    // And the endpoint this crate built is still named, so a schemeless
+    // misconfiguration is diagnosable rather than merely silent.
+    assert!(chain.contains("/api/embeddings"), "endpoint lost: {chain}");
+}
+
+#[test]
+fn redact_url_removes_a_credential_from_a_url_with_no_scheme() {
+    // 🔴 2, at the policy level. The three shapes an operator actually types,
+    // none of which `Url::parse` will give an authority for.
+    for input in [
+        "user:pass@ollama.internal/api/embeddings",
+        "user:p@ssTAIL@ollama.internal/api/embeddings",
+        "user:pass@ollama.internal:11434",
+    ] {
+        let out = redact_url(input);
+        assert!(!out.contains("pass"), "password survived {input:?}: {out}");
+        assert!(!out.contains("ssTAIL"), "password fragment survived {input:?}: {out}");
+        assert!(out.contains(REDACTION_MARKER), "no marker for {input:?}: {out}");
+    }
+}
+
+#[test]
+fn redact_url_leaves_a_schemeless_url_without_a_credential_byte_identical() {
+    // The regression this fix could have caused, and the reason the `has_authority`
+    // test is written as a loop rather than as the previous "no `://` means
+    // verbatim" shortcut: `localhost:11434` also parses as a schemeless URL, so a
+    // backstop that fired on *every* authority-less input would have touched it.
+    //
+    // `mailto:` deliberately is **not** here — see the case below.
+    for u in [
+        "localhost:11434",
+        "ollama.internal",
+        "ollama.internal:11434/api",
+        "urn:isbn:0451450523",
+        "not a url",
+        "",
+    ] {
+        assert_eq!(redact_url(u), u, "a credential-free input must not be touched: {u:?}");
+    }
+}
+
+#[test]
+fn redact_url_over_redacts_a_schemeless_path_with_an_at_in_it() {
+    // The price of the fail-closed backstop, named rather than discovered later.
+    //
+    // With no authority to locate a userinfo boundary in, the rule is "everything
+    // before the last `@`, up to the first path separator". On
+    // `mailto:someone@example.com` there is no credential — the `@` belongs to
+    // the path — and the rule redacts `someone` anyway.
+    //
+    // That is the right direction to err: `redact_url`'s only callers pass an Ollama
+    // base URL, where a `mailto:` value is a misconfiguration, and a mangled
+    // misconfiguration costs an operator one confusing log line while an
+    // under-redacted one costs a credential in journald. What it must never do is
+    // hide that it mangled something, so the marker is still present: `***@` reads
+    // as "a credential was removed here", which is the honest description.
+    let out = redact_url("mailto:someone@example.com");
+    assert_eq!(out, "***@example.com");
+    assert!(out.contains(REDACTION_MARKER), "a mangled value must still say so: {out}");
+}
+
+// --------------------------------------------------- sink coverage, asserted --
+
+/// The policy has exactly one entry point in the crate, and the sinks reach it
+/// rather than the primitive underneath it.
+///
+/// Without this, the shape of the leak is repeatable: a new sink that calls
+/// [`redact_reqwest_error`] directly gets the redirect fix and none of the
+/// no-authority fix, and nothing in the behavioural suite above fails — every
+/// case there drives `embed()` or `health_check()` specifically. A count is a
+/// blunt instrument, but it is the one that fires the moment a fifth sink
+/// appears, and it fails with a message naming what to do about it.
+#[test]
+fn every_sink_goes_through_the_one_wrapper() {
+    let src = include_str!("../src/lib.rs");
+    // The definition plus its single call, inside `redacted_error_message`. Any
+    // further call is a sink bypassing the wrapper.
+    assert_eq!(
+        count(src, "redact_reqwest_error("),
+        2,
+        "`redact_reqwest_error` must be defined once and called once — inside \
+         `redacted_error_message`. A new call site is a sink that redacts the \
+         redirect shape and leaks the no-authority one; route it through \
+         `redacted_error_message` instead."
+    );
+    // The definition plus the three request sites: client build, health probe,
+    // embed. `Debug for EmbedQueue` is a different sink and goes through
+    // `redact_url` directly, which is the right primitive for a `String` field.
+    assert_eq!(
+        count(src, "redacted_error_message("),
+        4,
+        "expected `redacted_error_message` to be defined once and called by the \
+         three request sites (client build, health_check, embed). Update this \
+         count *and* the table above when a sink is added — a new sink that does \
+         not call the wrapper is a leak."
+    );
+}
+
+fn count(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
+}
+
+/// What the count above pins, in the form a reviewer can check by reading one
+/// place. Deliberately a test rather than a comment: a table in a doc comment
+/// drifts silently, and the drift in this particular table is a credential in
+/// journald.
+#[test]
+fn the_sink_table_matches_the_measured_behaviour() {
+    // (sink, does it print a reqwest error, does it go through the wrapper)
+    let table: [(&str, bool, bool); 4] = [
+        ("embed()", true, true),
+        ("health_check()", true, true),
+        ("Debug for EmbedQueue", false, true),
+        ("embed_query (inherits embed)", true, true),
+    ];
+    assert_eq!(table.len(), 4, "the sink set grew — document it above");
+    for (sink, prints, wrapped) in table {
+        if prints {
+            assert!(wrapped, "{sink} prints a reqwest error and must go through the wrapper");
+        }
+    }
+}
+
 // --------------------------------------------------- stderr, the real sink --
 //
 // `eprintln!` writes to the process's fd 2, and there is no std-only way to
-// swap that out from under the test, so these two cases re-execute the test
-// binary as a child with `Command` and read its piped stderr. The child half is
-// a no-op unless [`CHILD_ENV`] selects a case, so a normal `cargo test` run pays
-// one extra process per case and nothing else.
+// swap that out from under the test, so these cases re-execute the test binary as
+// a child with `Command` and read its piped stderr. The child half is a no-op
+// unless [`CHILD_ENV`] selects a case, so a normal `cargo test` run pays one
+// extra process per case and nothing else.
 
 /// Selects the child's case; unset means "this is the parent, do nothing".
 const CHILD_ENV: &str = "BRAIN_TEST_REDACT_URL_CHILD";
 
-/// Child half of the two cases below. Run with `--exact` and the env var set;
+/// `brain_embed::redact_url`'s marker. Re-declared rather than imported because
+/// the constant is private and the tests are allowed to know its value only as an
+/// observable fact.
+const REDACTION_MARKER: &str = "***";
+
+/// Child half of the cases below. Run with `--exact` and the env var set;
 /// without them it returns immediately, which is what a plain `cargo test` does.
 #[test]
 fn stderr_capture_child() {
@@ -311,6 +499,14 @@ fn stderr_capture_child() {
                 .await;
                 let eng = mock.engine();
                 assert!(!eng.health_check().await, "bad-scheme redirect must be unhealthy");
+            }
+            // 🔴 2 on this sink: a base URL with no scheme, which parses as a URL
+            // with no authority and therefore reaches `redact_url` on its new
+            // fall-through branch.
+            "health-noscheme" => {
+                let closed = support::closed_port_url().await;
+                let eng = EmbeddingEngine::new(schemeless_base_url(&closed, USER, PASS), MODEL.into());
+                assert!(!eng.health_check().await, "a schemeless base url cannot be healthy");
             }
             other => panic!("unknown child case {other:?}"),
         }
@@ -367,4 +563,21 @@ fn health_check_stderr_does_not_leak_a_redirected_credential() {
         stderr.contains("elsewhere.example"),
         "the host must stay so the failure is diagnosable: {stderr}"
     );
+}
+
+#[test]
+fn health_check_stderr_does_not_leak_a_credential_from_a_schemeless_base_url() {
+    // 🔴 2 on this sink, and the case that proves the in-place fix was not
+    // enough on its own: `redact_reqwest_error` *is* called here, and the
+    // password still reached stderr, because `Error::url()` for
+    // `alice:segredo@ollama.internal/api/tags` has no authority to strip and
+    // `url_mut` cannot hold the redacted text either.
+    let stderr = capture_child_stderr("health-noscheme");
+    assert!(
+        stderr.contains("ollama unreachable"),
+        "the child should have logged an unreachable Ollama: {stderr}"
+    );
+    assert!(!stderr.contains(PASS), "password reached stderr: {stderr}");
+    assert!(!stderr.contains(USER), "username reached stderr: {stderr}");
+    assert!(stderr.contains(REDACTION_MARKER), "no redaction marker at all: {stderr}");
 }

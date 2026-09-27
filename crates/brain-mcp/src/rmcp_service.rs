@@ -415,11 +415,14 @@ pub async fn serve_rmcp_sse(db: String, port: u16) -> anyhow::Result<()> {
     serve_rmcp_sse_with(db, port, crate::global_queue(), shutdown).await
 }
 
-/// The shutdown wait both long-running MCP paths use: SIGINT **or** SIGTERM.
+/// The shutdown wait every long-running server path uses: SIGINT **or** SIGTERM.
 ///
-/// It is the only signal set in the crate, and the two callers of it are
-/// `server start` and [`serve_rmcp_sse`] — which is what the `serve*`
-/// subcommands run. SIGINT is what a terminal Ctrl-C sends; SIGTERM is what
+/// It is the only signal set in the crate, and its callers are `server start`,
+/// [`serve_rmcp_sse`] and the read-only viewer's `serve` subcommand — so all three
+/// servers `brain` can run take one path on a `systemctl stop`. (The third caller
+/// lives in `brain-cli`, not here, and is the reason this says "every" rather than
+/// the "both" this doc used to say while `serve` still died by signal.) SIGINT is
+/// what a terminal Ctrl-C sends; SIGTERM is what
 /// `systemd` sends, and it is the **default** `KillSignal` of a unit, so a server
 /// that waits on `ctrl_c` alone dies by signal on every `systemctl stop`: it never
 /// reaches the `ct.cancel()` that follows the wait in [`serve_rmcp_sse_with`], and
@@ -434,24 +437,36 @@ pub async fn serve_rmcp_sse(db: String, port: u16) -> anyhow::Result<()> {
 /// which told a reader that `serve-mcp` did *not* handle SIGTERM — is gone with
 /// it.
 ///
-/// Registers SIGINT **and** SIGTERM now, and returns the wait.
+/// Waits for SIGINT **or** SIGTERM, and registers **SIGTERM only** eagerly.
 ///
-/// # The registration is eager, and that is the point
+/// # Only SIGTERM is eager, and the difference is not cosmetic
 ///
-/// This *registers* and then returns a wait, rather than being an `async fn`
-/// whose body does both. The consequence is that calling it arms the OS handlers
-/// at the call site, so a caller invokes it **before** the work it wants to be
-/// interruptible during — the legacy import in `server start`, and the boot
-/// recovery and bind in `serve_rmcp_sse`. An `async fn` would register on
-/// first poll, leaving a window in which the process has done work and has no
-/// handler installed — and a `systemctl stop` landing in that window is the
-/// default action. The residual asymmetry is that a signal arriving mid-work is
-/// recorded and acted on at the next await rather than instantly; that is
-/// strictly better than being unreached.
+/// This is a function that *registers and then returns* a wait, rather than an
+/// `async fn` whose body does both — and that only pays off for SIGTERM. The
+/// `tokio::signal::unix::signal(..)` stream is constructed by the statement
+/// below, on the caller's thread, before the returned future is ever polled, so
+/// calling this arms SIGTERM at the call site. The `ctrl_c()` arm sits **inside**
+/// the `async move` block, and an `async fn` body does not run until the future
+/// is polled, so SIGINT is registered on first poll like any other.
 ///
-/// Both signals are raced, so a terminal Ctrl-C and a `systemctl stop` take one
-/// path: [`serve_rmcp_sse_with`] gets one resolved future either way, and the
-/// cancel-token teardown it performs runs exactly once.
+/// An `async fn` would therefore register *neither* signal until its first poll,
+/// leaving a window in which the process has done work and has no handler
+/// installed — and a `systemctl stop` landing in that window is the default
+/// action. So the shape earns its keep exactly once, for the signal that
+/// `systemd` actually sends, and the honest summary is **SIGTERM** rather than
+/// "either signal": `main.rs` says the same thing at the `serve` call site, six
+/// hundred lines from an earlier revision of this doc that claimed both were
+/// eager. Callers invoke it **before** the work they want interruptible: the
+/// legacy import in `server start`, and the boot recovery and bind in
+/// [`serve_rmcp_sse`].
+///
+/// The residual asymmetry for SIGINT is a window between the call and the first
+/// poll. A Ctrl-C inside it takes the default action; a SIGTERM does not. Strictly
+/// better than being unreached, and not worth an `async` block per signal to close.
+///
+/// Both signals are raced once polled, so a terminal Ctrl-C and a `systemctl stop`
+/// take one path: [`serve_rmcp_sse_with`] gets one resolved future either way, and
+/// the cancel-token teardown it performs runs exactly once.
 pub fn shutdown_on_sigint_or_sigterm() -> impl std::future::Future<Output = ()> {
     // Constructing the stream installs the signal disposition. This statement
     // runs now, on the caller's thread, before the returned future is polled.

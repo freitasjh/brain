@@ -23,16 +23,36 @@ fn main() -> anyhow::Result<()> {
     // person does exactly once, on their real path, out of habit. A populated
     // database is refused instead: an empty path (or a missing file) is the only
     // case the bench can honestly claim.
+    //
+    // Two things this guard must not be, and both were wrong once:
+    //
+    //   * It must not **open for writing** to look. `Store::open` runs
+    //     `init_schema`, so inspecting a database with it created tables and
+    //     wrote the `_meta` version row into the operator's real file — on the
+    //     production `brain.db` with 1,027 chunks, the most expensive thing a
+    //     guard could do while claiming to protect it.
+    //   * It must not treat **"could not read it"** as "nothing to protect". A
+    //     corrupted file, a database this user cannot open, a WAL whose `-shm` is
+    //     unreadable — every one of those used to fall out of `if let Ok(s)` and
+    //     land in the `remove_file` below, so the *hardest* case to recover from
+    //     was the one that got silently deleted. `let Some(..) else` refuses to
+    //     continue instead.
     if std::path::Path::new(&db).exists() {
-        if let Ok(s) = Store::open(&db) {
-            if s.count_notes()? > 0 {
-                anyhow::bail!(
-                    "{db} already holds {} note(s). This bench DELETES its database and writes a synthetic \
-                     5-note corpus, so it refuses to run against a populated one. Set BRAIN_DB_PATH to a \
-                     scratch path (or unset it for /tmp/bench.db).",
-                    s.count_notes()?
-                );
-            }
+        let Ok(s) = Store::open_read_only(&db) else {
+            anyhow::bail!(
+                "refusing to run: {db} exists but cannot be opened read-only, so what it holds is \
+                 unknown. The bench DELETES its database, and a database it cannot read is exactly \
+                 the one it must not delete — it may be corrupt, or owned by another user. Inspect \
+                 it by hand, or set BRAIN_DB_PATH to a scratch path."
+            );
+        };
+        let notes = s.count_notes()?;
+        if notes > 0 {
+            anyhow::bail!(
+                "{db} already holds {notes} note(s). This bench DELETES its database and writes a synthetic \
+                 5-note corpus, so it refuses to run against a populated one. Set BRAIN_DB_PATH to a \
+                 scratch path (or unset it for /tmp/bench.db)."
+            );
         }
     }
     let _ = std::fs::remove_file(&db);

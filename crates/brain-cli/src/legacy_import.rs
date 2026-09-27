@@ -193,6 +193,37 @@ fn free_archive_path(root: &Path) -> Result<PathBuf> {
     )
 }
 
+/// Writes a gzip-compressed tar to `dest`, from whatever `build` appends, and
+/// leaves the **contents** durable on disk when it returns `Ok`.
+///
+/// `dest` is created with `create_new`, so it never writes through an existing
+/// path or a symlink to one — the same reservation [`free_archive_path`]'s probe
+/// is only a helper for.
+///
+/// The `flush` and `sync_all` are not ceremony. Dropping the encoder instead of
+/// finishing it leaves the gzip stream without its trailer, and every reader
+/// then reports a truncated archive — so the error belongs here, at the write,
+/// rather than surfacing at somebody's first restore attempt. `sync_all`
+/// guarantees the bytes; the *name* is a separate write and is [`backup_vault`]'s
+/// problem, solved with a rename.
+fn write_tar_gz(
+    dest: &Path,
+    build: impl FnOnce(&mut tar::Builder<flate2::write::GzEncoder<std::fs::File>>) -> Result<()>,
+) -> Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", dest.display()))?;
+    let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(gz);
+    build(&mut builder)?;
+    let mut file = builder.into_inner()?.finish()?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
 /// Archives `vault_dir` into the export root, returning the file it wrote.
 ///
 /// Fails rather than returning a path: [`import_legacy`] turns that into a
@@ -217,14 +248,28 @@ pub fn backup_vault(vault_dir: &Path) -> Result<PathBuf> {
     brain_mcp::fs_guard::resolve_within(&root, ARCHIVE_NAME, "vault backup")?;
     let dest = free_archive_path(&root)?;
 
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&dest)
-        .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", dest.display()))?;
-    let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut builder = tar::Builder::new(gz);
-
+    // Streamed into a **temporary** name and renamed into place, because this
+    // archive is the only copy of the vault and a half-written one under the real
+    // name is worse than no archive at all.
+    //
+    // Writing straight to `dest` meant a crash — a full disk, a `SIGKILL` from
+    // `TimeoutStopSec`, a panic in the walk loop above — left a truncated
+    // `vault.bak.tar.gz` sitting there. It looked like a backup, it was not one,
+    // and it was worse than useless for two separate reasons: `free_archive_path`
+    // skips names that exist, so every later run went to `vault.bak.2.tar.gz`,
+    // `.3`, and the operator restoring the vault reaches for the file with the
+    // right name first. The rename makes the name mean "complete", so an
+    // interrupted run leaves something that is obviously not an archive and does
+    // not occupy the sequence.
+    //
+    // The temp name carries the pid so two concurrent runs cannot collide, and it
+    // is built by appending to the already-checked `dest` rather than by
+    // re-deriving a path, so it inherits `dest`'s containment.
+    let temp = {
+        let mut name = dest.as_os_str().to_os_string();
+        name.push(format!(".partial-{}", std::process::id()));
+        PathBuf::from(name)
+    };
     // Archive names are relative to the vault's **parent**, so the tree restores
     // as `vault/...` and keeps the name that identifies it. The parent rather
     // than the vault dir itself, because anchoring at the vault would strip the
@@ -237,40 +282,59 @@ pub fn backup_vault(vault_dir: &Path) -> Result<PathBuf> {
     // this function does not understand, and quietly rewriting it would produce an
     // archive that differs from the tree it claims to be a copy of.
     let base = vault_dir.parent().unwrap_or_else(|| Path::new("."));
-    let mut written = 0usize;
-    for entry in walkdir::WalkDir::new(vault_dir).into_iter().filter_map(|e| e.ok()) {
-        if !entry.path().is_file() {
-            continue;
+    let result = write_tar_gz(&temp, |builder| {
+        let mut written = 0usize;
+        for entry in walkdir::WalkDir::new(vault_dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.path().is_file() {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(base)
+                .map_err(|_| anyhow::anyhow!("{} is not under {}", entry.path().display(), base.display()))?;
+            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                anyhow::bail!(
+                    "refusing to archive {} under the name {:?}: an archive entry that escapes its root is an \
+                     extraction escape",
+                    entry.path().display(),
+                    rel
+                );
+            }
+            builder.append_path_with_name(entry.path(), rel)?;
+            written += 1;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(base)
-            .map_err(|_| anyhow::anyhow!("{} is not under {}", entry.path().display(), base.display()))?;
-        if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            anyhow::bail!(
-                "refusing to archive {} under the name {:?}: an archive entry that escapes its root is an \
-                 extraction escape",
-                entry.path().display(),
-                rel
-            );
+        if written == 0 {
+            anyhow::bail!("{} holds no readable file to archive", vault_dir.display());
         }
-        builder.append_path_with_name(entry.path(), rel)?;
-        written += 1;
+        Ok(())
+    });
+
+    // Checked on the temp file, *before* the rename, so a zero-length archive
+    // never takes the real name and never enters the sequence.
+    match result {
+        Ok(()) => {
+            if std::fs::metadata(&temp)?.len() == 0 {
+                let _ = std::fs::remove_file(&temp);
+                anyhow::bail!("the archive for {} came out empty", vault_dir.display());
+            }
+        }
+        Err(e) => {
+            // Best effort: the point is not to leave a partial file around, and a
+            // failure to remove one is not a reason to hide the real error.
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
     }
-    if written == 0 {
-        anyhow::bail!("{} holds no readable file to archive", vault_dir.display());
-    }
-    let gz = builder.into_inner()?;
-    // The encoder must be finished explicitly: dropping it would leave the gzip
-    // stream without its trailer, and every reader would report a truncated
-    // archive — so the error is surfaced here instead of at the first restore.
-    let mut file = gz.finish()?;
-    file.flush()?;
-    file.sync_all()?;
-    drop(file);
-    if std::fs::metadata(&dest)?.len() == 0 {
-        anyhow::bail!("the archive at {} came out empty", dest.display());
-    }
+
+    std::fs::rename(&temp, &dest)
+        .map_err(|e| anyhow::anyhow!("cannot publish {} as {}: {e}", temp.display(), dest.display()))?;
+    // `sync_all` on the archive guarantees its **contents**. It says nothing about
+    // the **name** — the directory entry for a rename is what makes the file
+    // visible under `dest` after a crash, and that is a separate write to a
+    // separate inode. Without this, a power loss can leave the archive complete
+    // and reachable only as the `.partial-` temp, which is the same
+    // "the backup is not where you left it" failure one level down.
+    std::fs::File::open(&root)?.sync_all()?;
     Ok(dest)
 }
 
@@ -609,5 +673,95 @@ mod tests {
             !db.exists(),
             "the database must not even be created when the archive could not be taken"
         );
+    }
+
+    /// A failed archive leaves **no** file under the archive name, does not
+    /// consume a slot in the naming sequence, and leaves no partial behind.
+    ///
+    /// All three are the same defect seen from three sides, and the test is worth
+    /// writing because a partial file left at `vault.bak.tar.gz` *looks* like the
+    /// backup of record: `free_archive_path` skips names that exist, so every
+    /// later run goes to `vault.bak.2.tar.gz`, `.3`, and an operator restoring the
+    /// vault reaches for the file with the right name first and gets the truncated
+    /// one. A test that only asserted "the happy path still works" would pass with
+    /// the temp-and-rename deleted.
+    ///
+    /// The failure is provoked by a vault with no readable file, which bails
+    /// **inside** the closure — i.e. after the temp file has been created. That is
+    /// the only place the cleanup path is reachable, so it is the case worth
+    /// pinning; the pre-flight refusals all happen before anything is opened.
+    #[test]
+    fn a_failed_archive_publishes_nothing_and_leaves_the_first_name_free() {
+        let root = ScratchRoot::new("atomic");
+        let d = scratch("vatomic");
+        // An empty directory: the walk finds nothing, so the closure bails.
+        let empty = d.join("vault");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let err = backup_vault(&empty).expect_err("an empty vault cannot be archived");
+        assert!(err.to_string().contains("no readable file"), "{err:#}");
+
+        let names = |dir: &Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        assert!(
+            !names(&root.dir).iter().any(|n| n == ARCHIVE_NAME),
+            "a failed archive published {ARCHIVE_NAME}: {:?}",
+            names(&root.dir)
+        );
+        assert!(
+            !names(&root.dir).iter().any(|n| n.contains(".partial-")),
+            "a partial file survived the failure: {:?}",
+            names(&root.dir)
+        );
+
+        // The sequence is untouched, so the next real backup takes the *first*
+        // name — the one an operator reaches for.
+        let vault = d.join("real");
+        vault_with(&vault, 2);
+        let b = backup_vault(&vault).expect("a later run archives normally");
+        assert_eq!(
+            b.file_name().unwrap(),
+            ARCHIVE_NAME,
+            "a failed run consumed a slot in the naming sequence: {:?}",
+            names(&root.dir)
+        );
+    }
+
+    /// The archive is written to a `.partial-` name and renamed, so the archive
+    /// name never exists in a half-written state. Observed from the outside: the
+    /// root is listed *after* the call, and the published file is a readable
+    /// tarball, not merely a non-empty one.
+    #[test]
+    fn the_published_archive_is_a_readable_tarball_and_no_partial_is_left_behind() {
+        let root = ScratchRoot::new("publish");
+        let d = scratch("vpublish");
+        let vault = d.join("vault");
+        vault_with(&vault, 3);
+        let b = backup_vault(&vault).expect("archive");
+        assert!(b.ends_with(ARCHIVE_NAME));
+
+        // Readable end to end, which a truncated gzip stream is not.
+        let f = std::fs::File::open(&b).unwrap();
+        let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(f));
+        let names: Vec<String> = ar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 3, "expected every note in the archive, got {names:?}");
+        assert!(names.iter().all(|n| n.starts_with("vault/")), "entries lost the vault/ prefix: {names:?}");
+
+        let leftovers: Vec<String> = std::fs::read_dir(&root.dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".partial-"))
+            .collect();
+        assert!(leftovers.is_empty(), "a partial file was left behind: {leftovers:?}");
     }
 }

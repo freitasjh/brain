@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use brain_core::EMBEDDING_DIM;
 
 /// Endpoint used when `BRAIN_OLLAMA_URL` is unset or blank.
@@ -155,23 +155,42 @@ const REDACTED: &str = "***";
 /// backstop below reproduces the same last-`@` rule, but the parser is what
 /// makes that rule correct rather than lucky.
 ///
-/// ## Input the parser rejects
+/// ## Input the parser cannot help with
 ///
-/// Unparseable input falls back to a conservative textual rule rather than being
-/// passed through unchanged. `Url::parse` rejects a surprising amount of what
-/// operators actually type — `""`, `http://h:99999` (port out of range),
-/// `http://` (empty host) — and being unparseable says nothing about whether
-/// the string contains a password; a mistyped `BRAIN_OLLAMA_URL` is precisely
-/// the value that ends up in a log. The backstop redacts the `[scheme]://…@`
-/// span, ending at the **last** raw `@` before the authority terminator, which
-/// is the only split that cannot leave a password fragment behind. With no
-/// `://`, or no `@` in the authority, there is nothing to redact and the input is
-/// returned verbatim.
+/// Two classes of input do not go down the authoritative path, and both fall to
+/// the same conservative textual backstop rather than being passed through
+/// unchanged:
+///
+/// 1. **Unparseable input.** `Url::parse` rejects a surprising amount of what
+///    operators actually type — `""`, `http://h:99999` (port out of range),
+///    `http://` (empty host) — and being unparseable says nothing about whether
+///    the string contains a password; a mistyped `BRAIN_OLLAMA_URL` is precisely
+///    the value that ends up in a log.
+/// 2. **Parsed, but with no authority to strip.** `user:pass@host/api` — what an
+///    operator gets by forgetting the scheme on the way out of a
+///    `curl -u user:pass host` — *parses*: scheme `user`, `cannot-be-a-base`,
+///    `has_authority() == false`. So `username()` and `password()` both report
+///    "no userinfo" while the credential sits in the `Url`'s **path**, verbatim.
+///    Trusting the parser's "there is nothing here" on a URL it could not give
+///    an authority for is the leak; this function only trusts it where an
+///    authority exists.
+///
+/// The backstop redacts the `[scheme]://…@` span — or, with no `://`, the span
+/// up to the first `/`, `?` or `#` — ending at the **last** raw `@` before that
+/// boundary, which is the only split that cannot leave a password fragment
+/// behind. With no `@` before the boundary, there is nothing to redact and the
+/// input is returned verbatim.
 pub fn redact_url(u: &str) -> String {
     match reqwest::Url::parse(u) {
         // Authoritative path: redact only when there is something to redact, so
         // the credential-free case never picks up the parser's normalisation.
         Ok(mut parsed) => {
+            if !parsed.has_authority() {
+                // No authority ⇒ no userinfo field for the parser to have
+                // emptied, so "no userinfo" here means "no place to look", not
+                // "nothing to hide". Backstop, which can see the raw `@`.
+                return redact_url_textually(u);
+            }
             if !has_userinfo(&parsed) {
                 return u.to_string();
             }
@@ -196,12 +215,65 @@ pub fn redact_url(u: &str) -> String {
 /// here would duplicate reqwest's message format and drift the day reqwest
 /// rewords it. A `None` URL — a client-build failure, which never reaches the
 /// request path — is left alone because there is nothing in it to redact.
+///
+/// ## This is a primitive, not the thing to call
+///
+/// In-place redaction is a **parser** operation, so it can only express a
+/// credential that the parser put in an authority. Two shapes defeat it:
+///
+/// - A URL with **no authority**: `user:pass@host/api` parses as scheme `user`
+///   with the credential in the path, so there is no userinfo to empty, and
+///   `redact_url`'s answer for it is text that no longer parses as an absolute
+///   URL — so it cannot be written back through `url_mut` either. The `Url` value
+///   is a faithful copy of a secret and there is no way to say so through it.
+/// - A redirect target, where reqwest attaches a URL it never stripped, which is
+///   what makes the error carry a credential at all (this one *is* fixable in
+///   place, and is the case this function was written for).
+///
+/// So the in-place pass is kept as-is and [`redacted_error_message`] — which runs
+/// it and then closes what it cannot — is what every sink in this crate prints.
+/// Call this directly only when you are mutating an error you are going to render
+/// with `Debug` on a `Url` the in-place pass *did* fix.
 pub fn redact_reqwest_error(e: &mut reqwest::Error) {
     let Some(url) = e.url_mut() else { return };
     if !has_userinfo(url) {
         return;
     }
     set_redacted_userinfo(url);
+}
+
+/// The one function in this crate that turns a `reqwest::Error` into something
+/// safe to print. Every request site in the crate goes through it, and there is
+/// exactly one call to [`redact_reqwest_error`] — so the next sink cannot
+/// reintroduce the gap by forgetting a step, only by not calling this.
+///
+/// Two mechanisms, in order, because neither is total:
+///
+/// 1. **In place**, via [`redact_reqwest_error`]. This is what actually fixes the
+///    common case — a redirect target whose `Location` carried a credential that
+///    reqwest never stripped — and it keeps reqwest's own wording, `Kind`, status
+///    and source chain exactly as the shipped version renders them.
+/// 2. **The rendered string**, for the shapes in-place redaction cannot
+///    represent. A `Url` with no authority holds the credential in its path, and
+///    its redacted form is not an absolute URL, so there is no `Url` value to
+///    substitute. The URL `reqwest` interpolated is then swapped for
+///    [`redact_url`]'s answer, keying on reqwest's own `Display` of it — which is
+///    the exact text the needle has to be, since a normalised re-serialisation
+///    would not match and would silently leave the string alone.
+///
+/// An error with no URL, or whose URL carries nothing to redact, is returned as
+/// reqwest rendered it.
+pub fn redacted_error_message(e: reqwest::Error) -> String {
+    let mut e = e;
+    redact_reqwest_error(&mut e);
+    let rendered = e.to_string();
+    let Some(url) = e.url() else { return rendered };
+    // Keyed on `Display`, not `as_str`: this is the form `reqwest`'s own message
+    // embedded, so a needle taken from anywhere else could fail to match and
+    // return the unredacted string in a way no assertion would notice.
+    let needle = url.to_string();
+    let safe = redact_url(&needle);
+    if safe == needle { rendered } else { rendered.replace(&needle, &safe) }
 }
 
 /// Whether a parsed URL carries any userinfo, i.e. whether there is a credential
@@ -226,13 +298,29 @@ fn set_redacted_userinfo(parsed: &mut reqwest::Url) {
     let _ = parsed.set_password(None);
 }
 
-/// Backstop for input [`reqwest::Url::parse`] rejected. See [`redact_url`].
+/// Backstop for input [`reqwest::Url`] could not give an authority for. See
+/// [`redact_url`].
+///
+/// `authority_start` is the byte the authority begins at — just past `://`, or
+/// `0` when the operator left the scheme off — and `authority_end` the first
+/// `/`, `?` or `#` at or after it, which is the same terminator either way: with
+/// no scheme the authority still ends at the first path, query or fragment
+/// separator, so `user:pass@host/api` bounds the credential at `user:pass@host`
+/// and leaves `/api` alone.
 fn redact_url_textually(u: &str) -> String {
-    let Some(scheme_end) = u.find("://") else { return u.to_string() };
-    let authority_start = scheme_end + "://".len();
-    let authority_end = u[authority_start..]
-        .find(['/', '?', '#'])
-        .map_or(u.len(), |i| authority_start + i);
+    let (authority_start, authority_end) = match u.find("://") {
+        Some(scheme_end) => {
+            let start = scheme_end + "://".len();
+            let end = u[start..].find(['/', '?', '#']).map_or(u.len(), |i| start + i);
+            (start, end)
+        }
+        // No `://` at all. The scheme-less reading is the dangerous one to get
+        // wrong here: `user:pass@host/api` has a credential and no scheme, and
+        // the paragraph above this function used to call that "nothing to
+        // redact" — the value a `curl -u` line produces when the operator drops
+        // the `http://` on the way into the env var.
+        None => (0, u.find(['/', '?', '#']).unwrap_or(u.len())),
+    };
     let authority = &u[authority_start..authority_end];
     // Last raw `@`, not the first: see `redact_url` for why the first can leave a
     // password fragment in the log. Rebased onto `u`, because `rfind` counts from
@@ -291,10 +379,14 @@ impl EmbeddingEngine {
     }
 
     fn client(&self, timeout_secs: u64) -> Result<reqwest::Client> {
+        // Routed through the same wrapper as the requests themselves. A build
+        // failure has no URL today, so this is free — and it means a `reqwest`
+        // error in this crate has exactly one way to become a string, which is
+        // the property that stops the next sink from inventing a second.
         reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .context("failed to build reqwest client")
+            .map_err(|e| anyhow!("failed to build reqwest client: {}", redacted_error_message(e)))
     }
 
     /// Wall-clock budget for one batch of `n_texts`, from [`embed_timeout_secs`].
@@ -347,14 +439,17 @@ impl EmbeddingEngine {
                 eprintln!("brain-embed: ollama unhealthy: status {}", resp.status());
                 false
             }
-            Err(mut e) => {
-                // `reqwest`'s `Display` appends the request URL to every message
-                // it builds, so the credential in `BRAIN_OLLAMA_URL` reaches this
-                // line even though nobody formatted the URL by hand. Redact the
-                // URL the error carries; the host and port stay, which is what
-                // makes an unreachable Ollama diagnosable at all.
-                redact_reqwest_error(&mut e);
-                eprintln!("brain-embed: ollama unreachable: {e}");
+            Err(e) => {
+                // `redacted_error_message`, not a bare `{e}`: `reqwest`'s
+                // `Display` appends the request URL to every message it builds,
+                // so the credential in `BRAIN_OLLAMA_URL` reaches this line even
+                // though nobody formatted the URL by hand. The redirect path is
+                // the one that really carries it — a normal request has its
+                // userinfo moved into an `Authorization` header and stripped
+                // from the `Url` before the error is built, so `Error::url()` is
+                // already clean there. Host and port stay, which is what makes
+                // an unreachable Ollama diagnosable at all.
+                eprintln!("brain-embed: ollama unreachable: {}", redacted_error_message(e));
                 false
             }
         }
@@ -372,13 +467,36 @@ impl EmbeddingEngine {
             .json(&serde_json::json!({"model": self.model, "prompt": text}))
             .send()
             .await
-            // The URL belongs in the message: callers degrade to FTS-only on
-            // this error, so a silent fallback is impossible to diagnose.
-            // The credential does not: `BRAIN_OLLAMA_URL` may be
-            // `http://user:pass@host`, and this string is what an operator reads
-            // in a log, in `brain status`, or in an MCP error response. Only the
-            // userinfo goes; host, port and endpoint path are all still named.
-            .with_context(|| format!("ollama request to {} failed", redact_url(&url)))?;
+            // Two URLs, and both are named, and neither may carry the credential.
+            //
+            // The first is this crate's own: it belongs in the message because
+            // callers degrade to FTS-only on this error, so a silent fallback is
+            // impossible to diagnose without it. Only the userinfo goes; host,
+            // port and endpoint path all stay.
+            //
+            // The second is `reqwest`'s: it interpolates the request URL into its
+            // `Display` on its own, so it arrives here as the error's **source**
+            // and `{e:#}` — the whole chain, which is what
+            // `brain-mcp`'s query-embed fallback prints to stderr on every
+            // `brain_search` whose embed fails — carried it. Redacting the URL
+            // this crate formats and leaving the source alone redacted the
+            // operator-facing half and leaked the other half. The redirect path
+            // is what makes that visible, and it is the same shape
+            // `health_check` was already handling.
+            //
+            // The source is therefore rendered by [`redacted_error_message`] and
+            // baked into the message, rather than kept as a `reqwest::Error`.
+            // Nothing downcasts on it — `grep -rn "downcast.*reqwest" crates/`
+            // is empty — so the chain's only consumer is the text, and this
+            // makes the text and the source the same string instead of two that
+            // can disagree.
+            .map_err(|e| {
+                anyhow!(
+                    "ollama request to {} failed: {}",
+                    redact_url(&url),
+                    redacted_error_message(e)
+                )
+            })?;
         if !resp.status().is_success() {
             bail!("ollama {}", resp.status());
         }

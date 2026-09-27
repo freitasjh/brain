@@ -799,6 +799,27 @@ async fn main() -> Result<()> {
             if dry_run { outln!("dry-run would delete {}: {:?}", expired.len(), expired); } else { outln!("deleted {}: {:?}", expired.len(), expired); }
         }
         Cmd::Serve { port } => {
+            // Armed before the bind, for the same reason `server start` arms it
+            // before its import and `serve_rmcp_sse` before its boot recovery: this
+            // **call** installs the SIGTERM disposition on the caller's thread, and
+            // only the future it returns is a wait. The bind below is an `.await`,
+            // so a SIGTERM landing in that window must be *recorded* — with the
+            // handler armed it is, and the wait is already resolved when first
+            // polled. Armed later, the same SIGTERM is the default action and the
+            // process dies by signal.
+            //
+            // `with_graceful_shutdown` is what makes that wait reachable at all:
+            // without it there is no wait to reach, and `systemctl stop` on
+            // `brain-viewer.service` kills the process mid-request.
+            //
+            // One caveat, inherited from the helper rather than introduced here:
+            // only SIGTERM is armed eagerly. Its `ctrl_c()` arm sits *inside* the
+            // returned `async move` block, and an `async fn` body does not run until
+            // the future is polled, so SIGINT is still registered on first poll and
+            // a Ctrl-C inside this window would take the default action. That is
+            // true of `serve-mcp` and `server start` too, and it is why this says
+            // SIGTERM rather than "either signal".
+            let shutdown = brain_mcp::rmcp_service::shutdown_on_sigint_or_sigterm();
             let app = brain_web::router(db.clone());
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
             // Y-02. Printed **after** the bind, so the line means "this port is
@@ -809,7 +830,7 @@ async fn main() -> Result<()> {
             // the port would satisfy the announcement while the bind failed. An
             // `?` that never announced anything would have been the honest version.
             outln!("viewer http://0.0.0.0:{}/ — /api/status|search|read|list", port);
-            axum::serve(listener, app).await?;
+            axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
         }
         Cmd::ServeMcp { port } => {
             if std::env::var("BRAIN_TRANSPORT").unwrap_or_default() == "stdio" {
@@ -859,7 +880,48 @@ async fn main() -> Result<()> {
                     );
                 }
                 if std::env::var("BRAIN_TRANSPORT").unwrap_or_default() == "stdio" {
-                    brain_mcp::serve_stdio(db).await?;
+                    // The wait built above is armed but, on this branch, nothing
+                    // ever polled it — and arming SIGTERM without acting on it is
+                    // *worse* than never arming it. The disposition is now tokio's
+                    // rather than the default, so `systemctl stop` is recorded and
+                    // then ignored: the process keeps reading stdin and serving,
+                    // and the unit only goes away when `TimeoutStopSec` escalates to
+                    // `SIGKILL`. `serve_viewer_shutdown.rs` calls that half-fix
+                    // "worse than the bug" and this branch is that half-fix.
+                    //
+                    // Raced rather than dropped, so both outcomes are honest: EOF
+                    // on stdin still returns cleanly, and a signal ends the
+                    // process. `serve_rmcp_sse_with` receives the same future by
+                    // move in the other arm; `select!` and the move are exclusive.
+                    tokio::select! {
+                        r = brain_mcp::serve_stdio(db.clone()) => r?,
+                        () = shutdown => {
+                            outln!("server: shutting down on signal");
+                            // `exit`, not `return`, and the reason is specific
+                            // rather than stylistic. `serve_stdio` reads stdin
+                            // through `tokio::io::stdin`, which parks a
+                            // `spawn_blocking` task on the read, and a runtime's
+                            // shutdown **waits** for its blocking tasks. Returning
+                            // from `main` drops the runtime, so a read on a pipe
+                            // the client still holds open never returns and the
+                            // process does not exit — a server that has stopped
+                            // serving and still refuses to die, which is the same
+                            // `TimeoutStopSec`-to-`SIGKILL` outcome the race above
+                            // was added to remove. Measured before this line: the
+                            // message printed, the process stayed alive.
+                            //
+                            // Skipping the async drop is safe *here* specifically:
+                            // this arm has no database handle, no embedding queue
+                            // and no listener to tear down — the import
+                            // short-circuited or finished before it, and
+                            // `serve_stdio` opens a `Store` per request and drops
+                            // it within the request. `outln!` above already
+                            // reaches for `process::exit` on a broken pipe, so this
+                            // is the same choice this file already makes for the
+                            // same reason.
+                            std::process::exit(0);
+                        }
+                    }
                 } else {
                     // Not `serve_rmcp_sse`: that builds its own wait, and this arm
                     // needs it armed *before* the import above — an import that takes
