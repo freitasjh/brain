@@ -3,9 +3,9 @@
   "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
   "current_feature": "brain-help-visual",
-  "current_phase": "Verify aprovado",
+  "current_phase": "completed",
   "previous_phase": "completed",
-  "next_phase": "Fase 6 - archive + commit",
+  "next_phase": null,
   "type": "feature",
   "artifacts": {
     "proposal": ".spec/brain-help-visual/PROPOSAL.md",
@@ -51,12 +51,12 @@
     },
     {
       "name": "brain-help-visual",
-      "phase": "verified",
-      "progress": 95
+      "phase": "committed",
+      "progress": 100
     }
   ],
   "phase": "archived",
-  "status": "deployed-production-2026-09-27-post-review",
+  "status": "committed 275c6e8",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
@@ -187,7 +187,8 @@
     "SEC-4: bench.rs let-else + Store::open_read_only (que falha em DB corrompido, ao contrario da v1)",
     "SEC-5: tar em .partial-<pid> + rename atomico + fsync do diretorio",
     "SEC-6: 3 docs que descreviam premissas refutadas por medicao",
-    "BOOKKEEPING: bump 0.9.0 -> 0.9.1"
+    "BOOKKEEPING: bump 0.9.0 -> 0.9.1",
+    "HELP-01: brain --help agrupado em 5 categorias com titulo, 21 one-liners PT (73 col), long_about, rodape Exemplos; renderer do help raiz (next_help_heading nao agrupa subcomandos no clap 4.6.6); redact_url no env impresso; 13 testes em help_overview.rs, 7 mutacoes; suite 326->342"
   ],
   "test_count": 342,
   "test_pass": 253,
