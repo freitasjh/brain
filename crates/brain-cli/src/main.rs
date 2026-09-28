@@ -2,7 +2,7 @@ use anyhow::Result;
 use brain_core::{sanitize_relative_path, validate_layer, validate_scope, LAYERS_WITH_SCOPE};
 use brain_mcp::{ChunkSyncInput, embed_chunks, sync_note_chunks};
 use brain_store::{NoteEmbed, Store};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -54,7 +54,7 @@ macro_rules! outln {
 }
 
 #[derive(Parser)]
-#[command(name="brain", version)]
+#[command(name="brain", version, after_help = AFTER_HELP)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -62,53 +62,333 @@ struct Cli {
     db: String,
 }
 
+/// Footer of `brain --help` (RF-04). Three commands covering the whole cycle —
+/// health, write, read back — because a first-time operator needs a starting point,
+/// and a command list is a *classification*, not a tutorial.
+const AFTER_HELP: &str = "\
+Exemplos:
+  brain ping
+  brain store regras naming \"## Regra\" --scope global
+  brain search \"termo\" --explain";
+
+// The 5 help groups, and only command *names* (ADR-01 v2).
+//
+// The one-liner of every command is read from the clap derive at render time and is
+// never written here: a literal in this table would be a second copy of the text,
+// and the two would drift the first time somebody reworded a doc-comment. The
+// mapping is names, or it is not a mapping.
+//
+// A name that is not a subcommand of `brain` is a `panic!` in `root_help` rather
+// than a skipped line, because a skipped line is a hole in the help that nobody
+// notices until an operator reports that a command does not exist.
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    ("Uso comum", &["ping", "search", "read", "store", "recent", "status"]),
+    ("Memória", &["checkpoints", "restore", "delete", "export", "backup"]),
+    ("Manutenção", &["forget-sweep", "reindex", "migrate"]),
+    ("Servidor", &["server", "serve-mcp", "serve", "hook"]),
+    ("Projetos e setup", &["project", "setup"]),
+];
+
+/// Title of the section that catches any subcommand not named in [`HELP_GROUPS`].
+///
+/// It exists to make a forgotten command *visible* instead of invisible. A command
+/// that drops out of the groups is still a command, and the alternative — omitting
+/// it — is a help page that lies by omission. Today the only member is clap's own
+/// `help`.
+const UNGROUPED_TITLE: &str = "Outros";
+
+/// Whether `argv` (already past the program name) asks for the *root* help and
+/// nothing else.
+///
+/// Scoped to a single argument on purpose: `brain help search` and `brain --db X
+/// --help` are clap's to answer, and this function must not swallow them — the
+/// renderer only knows how to print the root page.
+///
+/// A lone `help` is intercepted alongside `--help`/`-h` (RF-06) because it is the
+/// *same request*: an operator typing `brain help` wants the page, not a listing of
+/// the ways to get the page. `brain help <cmd>` is a different request and stays
+/// with clap.
+///
+/// Two root pages therefore exist by design — this one and clap's flat list for
+/// `brain --db X --help`. That is a choice about consistency (one custom page, on the
+/// minimum argv), not a gap; it is pinned by
+/// `a_root_help_request_with_other_arguments_is_still_claps` so that changing it
+/// cannot happen by accident.
+fn is_root_help_request(argv: &[String]) -> bool {
+    matches!(argv, [only] if only == "--help" || only == "-h" || only == "help")
+}
+
+/// One aligned block: a title, then `  <name>  <description>` rows.
+///
+/// `longest` is passed in rather than measured here so that every block on the page
+/// shares one column. Measuring per block is what makes clap's own output look
+/// ragged, and the point of this page is a single vertical read.
+fn write_block(out: &mut String, title: &str, rows: &[(String, String)], longest: usize) {
+    if rows.is_empty() {
+        return;
+    }
+    out.push('\n');
+    out.push_str(title);
+    out.push_str(":\n");
+    for (name, description) in rows {
+        out.push_str("  ");
+        out.push_str(name);
+        if description.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        // Two spaces of gutter after the widest name in the page. `chars().count()`
+        // is the right measure: the one-liners are Portuguese and a multi-byte
+        // character occupies one terminal cell.
+        for _ in name.chars().count()..longest + 2 {
+            out.push(' ');
+        }
+        out.push_str(description);
+        out.push('\n');
+    }
+}
+
+/// The root help page, per ADR-01 v2.
+///
+/// clap 4.6 has no mechanism for this: `next_help_heading` on a subcommand is read
+/// only by the subcommand's *own* help (it renames that command's `Options:` to the
+/// group title) and never by the parent's, which writes a single `Commands:` section
+/// — measured in `clap_builder-4*/src/output/help_template.rs:394-396` and
+/// `:403-415`, and recorded in `tests/help_overview.rs`. So the grouping is ours.
+///
+/// What is *not* ours: the usage line, every name, every one-liner, every option
+/// with its env and default, and the footer all come back out of `Cli::command()`.
+/// Only the group titles and the order are added here. `brain <cmd> --help` never
+/// reaches this function and stays 100% clap.
+fn root_help() -> String {
+    let mut cmd = Cli::command();
+    // `build()` is what materialises clap's own `--help`/`--version` args; without it
+    // the Options block below would list `--db` and nothing else.
+    cmd.build();
+
+    // Collect every block before printing any of it: the column width is a property
+    // of the whole page, so printing as we went would need a second pass to align.
+    let mut sections: Vec<(&str, Vec<(String, String)>)> = Vec::new();
+    for (title, names) in HELP_GROUPS {
+        let rows = names
+            .iter()
+            .map(|name| {
+                let sub = cmd.find_subcommand(name).unwrap_or_else(|| {
+                    panic!("HELP_GROUPS names `{name}` under `{title}`, and it is not a subcommand of `brain`")
+                });
+                (sub.get_name().to_string(), about_of(sub))
+            })
+            .collect();
+        sections.push((title, rows));
+    }
+
+    // Anything a group forgot still gets printed, under a heading of its own. A
+    // command that vanishes from the help is worse than one that looks misplaced.
+    let ungrouped: Vec<(String, String)> = cmd
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .filter(|sub| !HELP_GROUPS.iter().any(|(_, names)| names.contains(&sub.get_name())))
+        .map(|sub| (sub.get_name().to_string(), about_of(sub)))
+        .collect();
+    sections.push((UNGROUPED_TITLE, ungrouped));
+
+    let longest = sections
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max(2);
+
+    // `render_usage` already emits the `Usage: ` prefix, so it is used verbatim.
+    let mut out = format!("{}\n", cmd.render_usage());
+    for (title, rows) in &sections {
+        write_block(&mut out, title, rows, longest);
+    }
+
+    let options: Vec<(String, String)> = cmd
+        .get_arguments()
+        .filter(|a| !a.is_hide_set())
+        .map(|a| option_row(a, &|key| std::env::var(key).unwrap_or_default()))
+        .collect();
+    let options_longest = options
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max(2);
+    write_block(&mut out, "Options", &options, options_longest);
+
+    if let Some(after) = cmd.get_after_help() {
+        out.push('\n');
+        out.push_str(after.to_string().trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// A subcommand's one-liner, straight from the derive.
+///
+/// `about` and not `long_about`: `long_about` is the paragraph the operator reads
+/// *after* choosing the command, and pasting it into the root list is the exact
+/// defect brain-help-visual was opened to remove.
+fn about_of(sub: &clap::Command) -> String {
+    sub.get_about().map(|a| a.to_string()).unwrap_or_default()
+}
+
+/// One option as `(left column, right column)`, with clap's env and default
+/// annotations — read from the `Arg`, never written as a literal, so a new global
+/// option appears here without anyone remembering this function.
+///
+/// `resolve` reads the environment rather than calling `std::env::var` inline. That
+/// is not a testing seam added for its own sake: `set_var` is `unsafe` in edition
+/// 2024 and mutates process-global state that every parallel test in this binary
+/// shares, so a test that needed a credential-shaped value would either be unsound or
+/// need a lock. The *redaction* stays in here — which is the part worth pinning — and
+/// only the lookup is injected.
+fn option_row(arg: &clap::Arg, resolve: &dyn Fn(&str) -> String) -> (String, String) {
+    // `write_block` supplies the two-space indent, so a long-only option carries
+    // four more of its own: that lines its `--` up with the `--` of a short+long
+    // one, which is what keeps the value column straight across a mix.
+    let mut name = match (arg.get_short(), arg.get_long()) {
+        (Some(s), Some(l)) => format!("-{s}, --{l}"),
+        (Some(s), None) => format!("-{s}"),
+        (None, Some(l)) => format!("    --{l}"),
+        (None, None) => String::new(),
+    };
+    if let Some(values) = arg.get_value_names() {
+        for value in values {
+            name.push_str(&format!(" <{value}>"));
+        }
+    }
+
+    let mut description = arg.get_help().unwrap_or_default().to_string();
+    if let Some(env) = arg.get_env() {
+        let env = env.to_string_lossy();
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        // The *resolved* value, not the default, because that is the number the
+        // operator is trying to read off this line.
+        //
+        // Redacted, because this goes to stdout and stdout gets pasted into a
+        // ticket. Zero effect today — the only global arg is `db`, a path, and
+        // `redact_url` returns a credential-free input byte-identical. The point is
+        // the future named in F4: a global arg over an env like `BRAIN_OLLAMA_URL`
+        // (which accepts `http://user:pass@host`) would otherwise print the password
+        // into the help, and a help page travels much further than a log line.
+        let resolved = resolve(env.as_ref());
+        description.push_str(&format!("[env: {env}={}]", brain_embed::redact_url(&resolved)));
+    }
+    let defaults: Vec<String> = arg
+        .get_default_values()
+        .iter()
+        .map(|v| v.to_string_lossy().into_owned())
+        .collect();
+    if !defaults.is_empty() {
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        description.push_str(&format!("[default: {}]", defaults.join(" ")));
+    }
+    (name, description)
+}
+
+// Declaration order here IS the printed order of `brain --help`: clap 4 sorts
+// neither the subcommands nor the one-liners, it emits them as declared. That is
+// the only reason the variants are not in the alphabetical shape they were in
+// before brain-help-visual — the 5 groups the ux-designer froze are contiguous
+// blocks, and the block order is the group order.
+//
+// Two clap mechanisms the SPEC assumed would render the group titles, and neither
+// does (measured, not guessed — see `tests/help_overview.rs`):
+//
+// - `next_help_heading` on a variant: clap builds its heading sections from the
+//   *parent's* arguments (`clap_builder-4*/src/output/help_template.rs:394-396`),
+//   never from a subcommand's, and writes one `Commands:` section (`:403-415`).
+//   It is not merely inert here: the heading propagates to the subcommand's *own*
+//   args, so `brain reindex --help` titled its flag list "Manutenção:".
+// - `flatten_help`: it inlines each subcommand's args into the parent, turning
+//   `brain --help` into every flag of all 20 commands. Wrong feature for this.
+//
+// A doc comment on this enum is also load-bearing to avoid: clap derive reads it as
+// the subcommand group's `long_about`, and a multi-line `long_about` switches
+// `--help` into the extended template that expands every subcommand in full.
 #[derive(Subcommand)]
 enum Cmd {
-    /// Health-check (prints pong)
+    // ---- Uso comum -------------------------------------------------------------
+    /// Verifica se o servidor responde
     Ping,
-    /// Store a note (scope required for arquitetura/regras/estudos)
-    Store { layer: String, path: String, content: String, #[arg(long)] scope: Option<String>, #[arg(long)] project: Option<String>, #[arg(long)] tags: Option<String>, #[arg(long)] pinned: bool, #[arg(long)] expires_at: Option<String> },
-    /// Read a note by layer/path (+scope)
-    Read { layer: String, path: String, #[arg(long)] scope: Option<String> },
-    /// Hybrid search (FTS5+vector RRF, filters, --explain)
+    #[command(long_about = "\
+Busca híbrida: os 4 streams do RRF (vetor, FTS5, entidades, grafo) fundidos com
+k=60, mais o bônus de autoridade (arquitetura/regras +0.15, pinned +0.10) e o
+truncamento final em --top-k.
+
+Com o Ollama fora, o stream vetorial não pontua e a busca degrada para texto
+(--explain mostra os 4 campos de stream). O --explain é só do CLI; a tool MCP
+não o expõe.")]
+    /// Busca notas por texto e semântica
     Search { query: String, #[arg(long)] layer: Option<String>, #[arg(long)] scope: Option<String>, #[arg(long)] project: Option<String>, #[arg(long)] tag: Option<String>, #[arg(long, default_value_t=5)] top_k: usize, #[arg(long)] explain: bool },
-    /// Hard-delete a note by full path
-    Delete { path: String },
-    /// Latest notes by updated_at
+    /// Lê uma nota pelo caminho completo
+    Read { layer: String, path: String, #[arg(long)] scope: Option<String> },
+    /// Salva uma nota (scope p/ arquitetura/regras/estudos)
+    Store { layer: String, path: String, content: String, #[arg(long)] scope: Option<String>, #[arg(long)] project: Option<String>, #[arg(long)] tags: Option<String>, #[arg(long)] pinned: bool, #[arg(long)] expires_at: Option<String> },
+    /// Lista as notas alteradas por último
     Recent { #[arg(long, default_value_t=10)] top_k: usize },
-    /// DB counts (notes/chunks/projects)
+    /// Mostra notas, cobertura e fila de embedding
     Status,
-    /// Rebuild FTS5+vector index. Embeds first, then writes in one transaction.
-    /// `--no-embed` skips the embedding pass (offline structural reindex; vectors
-    /// that already match their chunk text are preserved, the rest stay NULL).
-    Reindex { #[arg(long)] all: bool, #[arg(long)] no_embed: bool },
-    /// Audit log (time-travel)
+
+    // ---- Memória ----------------------------------------------------------------
+    /// Consulta o histórico de alterações
     Checkpoints { #[arg(long, default_value_t=10)] limit: usize },
-    /// Restore an audit entry by id
+    /// Restaura uma versão anterior pelo id
     Restore { id: i64 },
-    /// Copy brain.db to .bak
-    Backup { #[arg(long)] to: Option<String> },
-    /// Dump notes to a directory (temp)
+    /// Apaga uma nota e seus trechos
+    Delete { path: String },
+    /// Exporta notas p/ diretório temporário
     Export { #[arg(long, default_value="/tmp/brain-export")] to: String, #[arg(long)] force: bool },
-    /// TTL sweep (expired notes, pin never expires)
+    /// Copia o banco para um .bak
+    Backup { #[arg(long)] to: Option<String> },
+
+    // ---- Manutenção -------------------------------------------------------------
+    /// Apaga notas vencidas (testar com --dry-run)
     ForgetSweep { #[arg(long)] dry_run: bool },
-    /// Import legacy vault .md files. Embeds the imported corpus unless --no-embed.
+    #[command(long_about = "\
+Reindex é NÃO destrutivo: nunca faz DELETE FROM chunks. Embeda antes da transação
+e reconcilia por INSERT OR REPLACE em (path, chunk_index), preservando o vetor
+de quem o texto ainda casa e deixando NULL o resto.
+
+--all    reindexa o acervo inteiro (default o que interessa).
+--no-embed  só a parte estrutural: reconstrói o FTS5 sem tocar na rede, útil
+         offline. Vetores que batem com o texto são preservados.")]
+    /// Reconstrói o índice (vetor por padrão)
+    Reindex { #[arg(long)] all: bool, #[arg(long)] no_embed: bool },
+    /// Importa o acervo legado .md (uso único)
     Migrate { #[arg(long, default_value="./vault")] vault: String, #[arg(long, default_value="./data/index.db")] old_index: String, #[arg(long)] no_embed: bool },
-    /// Read-only viewer (default 8322)
-    Serve { #[arg(long, default_value_t=8322)] port: u16 },
-    /// MCP SSE server (default 8321) + stdio fallback
-    ServeMcp { #[arg(long, default_value_t=8321)] port: u16 },
-    /// Operator lifecycle of the MCP server (US-01.1). The spec asks for `start`
-    /// and only `start`; `serve` / `serve-mcp` bind the same ports as before and
-    /// serve the same tools. Their shutdown is also the same now: all three end on
-    /// SIGINT **or** SIGTERM, so `systemctl stop` runs the teardown.
+
+    // ---- Servidor ---------------------------------------------------------------
+    #[command(long_about = "\
+Ciclo de vida do servidor MCP (US-01.1). Auto-importa o acervo legado e arquiva
+em vault.bak.tar.gz dentro de BRAIN_EXPORT_ROOT antes de servir; se o archive
+falhar, o import não roda.
+
+`start` é o único subcomando porque a spec pede um. Bind e ferramentas são os
+mesmos de serve-mcp; o shutdown é o mesmo nos três: SIGINT ou SIGTERM, para que
+`systemctl stop` rode o teardown.")]
+    /// Inicia o servidor MCP com importação legada
     Server { #[command(subcommand)] sub: ServerCmd },
-    /// Agent lifecycle hook (session-start|tool-result|session-end)
+    /// Inicia só o MCP via SSE (sem importar)
+    ServeMcp { #[arg(long, default_value_t=8321)] port: u16 },
+    /// Inicia só o visualizador web somente-leitura
+    Serve { #[arg(long, default_value_t=8322)] port: u16 },
+    /// Registra um evento do agente na sessão
     Hook { #[arg(long, value_parser=["session-start","tool-result","session-end"])] event: String, #[arg(long)] project: String, #[arg(long)] payload: Option<String> },
-    /// One-shot installer: setup [all|opencode|systemd|shell|project]
-    Setup { #[arg(default_value = "all")] target: String, #[arg(long, default_value_t = 8321)] mcp_port: u16, #[arg(long, default_value_t = 8322)] viewer_port: u16, #[arg(long)] brain_dir: Option<String>, #[arg(long)] dir: Option<String>, #[arg(long)] force: bool, #[arg(long)] dry_run: bool },
-    /// Projects CRUD + note link/unlink
+
+    // ---- Projetos e setup -------------------------------------------------------
+    /// Gerencia projetos e vínculos de notas
     Project { #[command(subcommand)] sub: ProjectCmd },
+    /// Instala MCP, regras e serviço (uso único)
+    Setup { #[arg(default_value = "all")] target: String, #[arg(long, default_value_t = 8321)] mcp_port: u16, #[arg(long, default_value_t = 8322)] viewer_port: u16, #[arg(long)] brain_dir: Option<String>, #[arg(long)] dir: Option<String>, #[arg(long)] force: bool, #[arg(long)] dry_run: bool },
 }
 
 #[derive(Subcommand)]
@@ -618,6 +898,28 @@ async fn hook_handle(event: String, project: String, payload: Option<String>, db
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // ADR-01 v2. The root help is ours; everything else is clap's. Checked before
+    // `parse()` so that clap never gets the chance to print its own single
+    // `Commands:` section, and scoped to a lone `--help`/`-h`/`help` so that
+    // `brain help search` and `brain --db X --help` still go to clap untouched.
+    //
+    // The narrow scope is a deliberate choice, not a gap: there is exactly **one**
+    // custom page, and it is the one an operator reaches by asking for help with no
+    // further qualification. `brain --db X --help` therefore prints clap's flat list,
+    // so two root pages exist by design. (It is *not* about which page shows the
+    // resolved `BRAIN_DB_PATH` — `option_row` prints it on both, and
+    // `the_options_block_carries_every_visible_arg_with_its_env_and_default` is what
+    // pins that.)
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if is_root_help_request(&argv) {
+        // `outln!` for consistency with every other write in this binary, and because
+        // the root page will outgrow a 64 KB pipe buffer if the command list ever does.
+        // At today's 1.55 KB `BrokenPipe` is unreachable -- see the M6 note in
+        // tests/help_overview.rs: `a_truncated_read_of_the_root_help_still_exits_zero`
+        // proves no panic, not this choice.
+        outln!("{}", root_help().trim_end_matches('\n'));
+        return Ok(());
+    }
     let cli = Cli::parse();
     let db = cli.db.clone();
     // stdio transport fallback via env
@@ -990,4 +1292,115 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The grouping table and the derive must agree in both directions.
+    ///
+    /// `root_help` panics on a name that is not a subcommand, so a typo in
+    /// `HELP_GROUPS` is loud — but only for the names it *does* reach. The silent
+    /// half is the one that matters: a command the table forgot is printed under
+    /// `Outros` instead of its group, or, if the `Outros` block ever goes away,
+    /// not printed at all. Neither shows up in a smoke test of the page, and both
+    /// are the same defect wearing different clothes.
+    #[test]
+    fn the_help_groups_cover_every_subcommand_exactly_once() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let declared: Vec<&str> = cmd
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .map(|s| s.get_name())
+            .collect();
+
+        let grouped: Vec<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+
+        let mut unique = grouped.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            grouped.len(),
+            "a command is listed in two groups: {grouped:?}"
+        );
+        for name in &grouped {
+            assert!(
+                declared.contains(name),
+                "HELP_GROUPS names `{name}`, which is not a subcommand of `brain`"
+            );
+        }
+        let orphans: Vec<&&str> = declared.iter().filter(|n| !grouped.contains(n)).collect();
+        assert_eq!(
+            orphans,
+            vec![&"help"],
+            "every subcommand must be in exactly one group; ungrouped: {orphans:?}"
+        );
+    }
+
+    /// A root help request is recognised only when it is the *whole* argv.
+    ///
+    /// The two negative cases are the point: `brain --db X --help` is how an operator
+    /// checks what `BRAIN_DB_PATH` resolved to, and handing that to the renderer
+    /// would print a page that silently disagrees with the command about to run.
+    #[test]
+    fn only_a_lone_help_flag_is_a_root_help_request() {
+        let owned = |v: &[&str]| is_root_help_request(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(owned(&["--help"]));
+        assert!(owned(&["-h"]));
+        assert!(owned(&["help"]));
+        assert!(!owned(&[]));
+        assert!(!owned(&["help", "search"]));
+        assert!(!owned(&["--db", "/tmp/x.db", "--help"]));
+        assert!(!owned(&["search", "--help"]));
+    }
+
+    /// An env-resolved value goes to stdout, and stdout gets pasted into a ticket.
+    ///
+    /// Built on a synthetic `Arg` rather than a real one because the only global arg
+    /// today is `db` — a path with no credential to leak. The point is the *future*
+    /// named in F4: a global arg over an env like `BRAIN_OLLAMA_URL` (which accepts
+    /// `http://user:pass@host`) would print the password straight into `--help`, and a
+    /// help page travels much further than a log line. A test cannot wait for that arg
+    /// to exist, so it constructs the shape it will have.
+    ///
+    /// The two halves are both load-bearing. Redaction alone would pass while the
+    /// wiring was dead, and byte-identity alone would pass while a password leaked.
+    #[test]
+    fn an_env_value_is_redacted_but_a_credential_free_one_is_untouched() {
+        let arg = clap::Arg::new("ollama-url")
+            .long("ollama-url")
+            .env("BRAIN_OLLAMA_URL");
+
+        // With a credential: the password must not survive into the rendered row.
+        // The value is injected rather than set in the environment, because
+        // `set_var` is unsafe in edition 2024 and would mutate state every parallel
+        // test in this binary shares. The redaction is inside `option_row`, so the
+        // wiring under test is the real one.
+        let credentialed = |_: &str| "http://user:hunter2@ollama:11434".to_string();
+        let (_name, description) = option_row(&arg, &credentialed);
+        assert!(
+            !description.contains("hunter2"),
+            "the password reached the rendered help row: {description}"
+        );
+        assert!(
+            description.contains("[env: BRAIN_OLLAMA_URL="),
+            "the annotation itself must survive redaction: {description}"
+        );
+
+        // Without a credential: byte-identical, so the common case cannot be
+        // degraded by an over-eager redactor (F4 names `mailto:` as the known
+        // over-redaction, and this is the property that stops that from mattering).
+        let plain_path = "/home/u/data/brain.db".to_string();
+        let (_name, description) = option_row(&arg, &|_| plain_path.clone());
+        assert!(
+            description.contains("[env: BRAIN_OLLAMA_URL=/home/u/data/brain.db]"),
+            "a credential-free value must reach the page unchanged: {description}"
+        );
+    }
 }

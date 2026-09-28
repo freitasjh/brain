@@ -2,14 +2,16 @@
   "project": "brain",
   "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
-  "current_feature": "security-hardening-and-shutdown",
-  "current_phase": "completed",
-  "previous_phase": "implementation",
-  "next_phase": null,
+  "current_feature": "brain-help-visual",
+  "current_phase": "Verify aprovado",
+  "previous_phase": "completed",
+  "next_phase": "Fase 6 - archive + commit",
   "type": "feature",
   "artifacts": {
-    "archive": ".spec/archive/20260917-brain-rust-sqlite/",
-    "archive_superseded": ".spec/archive/20260927-brain-mcp-server/SUPERSEDED.md"
+    "proposal": ".spec/brain-help-visual/PROPOSAL.md",
+    "spec": ".spec/brain-help-visual/SPEC.md",
+    "verify": ".spec/brain-help-visual/VERIFY.md",
+    "tests": "crates/brain-cli/tests/help_overview.rs"
   },
   "features": [
     {
@@ -46,6 +48,11 @@
       "name": "y01-y06-queue-funnel-and-flake",
       "phase": "completed",
       "progress": 100
+    },
+    {
+      "name": "brain-help-visual",
+      "phase": "verified",
+      "progress": 95
     }
   ],
   "phase": "archived",
@@ -182,25 +189,26 @@
     "SEC-6: 3 docs que descreviam premissas refutadas por medicao",
     "BOOKKEEPING: bump 0.9.0 -> 0.9.1"
   ],
-  "test_count": 326,
+  "test_count": 342,
   "test_pass": 253,
   "code_review": {
-    "last_invoked_at": "2026-09-27T00:00:00Z",
+    "last_invoked_at": "2026-09-28T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
-    "attention_issues": 0,
-    "cycles": 6,
-    "reviewer_notes": "6 ciclos: 4 reprovacoes (P0-ZV, V-01..05, W-01..05, X-01..06), 1 aprovacao (Y-01..06), 1 reprovacao (6o: 2 criticos de seguranca em TD-003). A correcao passou por um 7o ciclo implicito via mutacao: 16 testes novos, 3 mutacoes de redaction, wrapper unico. O modo de falha encolheu em 4 etapas: garantia nunca testada -> ramo adjacente a falha sem teste -> relatorio afirmando invariante mais forte que o codigo -> politica correta aplicada a N-1 de N sinks. Os ultimos 2 criticos eram cobertura de sink, nao raciocinio",
+    "attention_issues": 2,
+    "cycles": 1,
+    "reviewer_notes": "code-reviewer (opencode.json:76; 'fullstack-code-reviewer' das regras NAO existe no repo). APPROVED zero 🔴. 2 must-fix aplicados: (1) main.rs comentario do outln! afirmava BrokenPipe inalcancavel a 1590 B/64 KB de buffer (H8); (2) bloco Options sem assert — mutacao M2 removendo <DB>+[env:] passava 11/11, agora pega 1. 4 decisoes registradas na SPEC: R-02 emendado (texto do clap fica EN), RF-06 (brain help solitario interceptado), duas paginas raiz por design (justificativa anterior REFUTADA), ADR-03 redact_url no env impresso.",
     "reviewer_discoveries": [
-      "embed() redigia a URL que montou mas nao o source do reqwest::Error; o Display dele anexa o alvo do redirect, que nao passa por extract_authority. Sink real: rmcp_service.rs:148 imprime {e:#} a cada brain_search",
-      "redact_url devolvia verbatim URL com credencial e sem :// porque Url::parse aceita (scheme 'user', has_authority()==false) e has_userinfo retorna false",
-      "o teste que provava a perfuracao usava reqwest::Client::new() cru; o unico lugar do brain que produz aquele erro e embed(), e nao era testado",
-      "S5 da minha propria pista (constante duplicada Rust/Python sem teste) estava errado: o guard existe e le o Rust vivo",
-      "a premissa do TD-003 (que o Display do reqwest embute a URL no caminho comum) estava errada: embute, mas extract_authority ja higienizou a Url"
+      "next_help_heading nao agrupa subcomandos no clap 4.6.6 — help_template.rs:394-396 monta secoes a partir dos argumentos do PAI; e propaga, renomeando Options: dos 20 subcomandos. ADR-01 v1 da SPEC era falso.",
+      "flatten_help inlina as FLAGS de cada subcomando no pai — brain --help virava as flags dos 20 comandos",
+      "o comentario que justificava excluir 'brain --db X --help' ('esconderia o BRAIN_DB_PATH resolvido') e REFUTADO: option_row tambem le std::env::var, entao a pagina custom mostraria o mesmo valor",
+      "R-02 ('todo texto em portugues') e literalmente falso na pagina: help/--help/--version sao texto do clap. Emendado em vez de fingido.",
+      "mutacao que passa verde e o sinal: remover o value name <DB> e a anotacao [env:] do bloco Options nao quebrava build nem teste (11/11)",
+      "que 'brain help' solitario virou interceptado foi mudanca de comportamento que a PROPOSAL nao previa — grep achou nenhum consumidor no repo, mas consumidor pode viver fora dele"
     ]
   },
   "harness_status": "passed",
-  "last_updated": "2026-09-27",
+  "last_updated": "2026-09-28",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -336,5 +344,12 @@
     "verified_e2e": "BRAIN_OLLAMA_URL com senha, com e sem esquema: 0 ocorrencias no binario de producao; host continua nomeado",
     "export_allowlist": "BRAIN_EXPORT_ROOT com contencao canonica + ownership (euid) + other-writable",
     "over_redaction": "mailto:someone@example.com -> ***@example.com. Fail-closed do backstop, nomeado em teste, nao escondido"
-  }
+  },
+  "overrides": [
+    {
+      "portao": "P1->P2",
+      "motivo": "usuario aprovou ('aprovado') antes do conteudo da SPEC ser exibido; SPEC gerada e registrada a posteriori nesta mesma sessao",
+      "data": "2026-09-28"
+    }
+  ]
 }
