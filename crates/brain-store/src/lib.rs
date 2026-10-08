@@ -54,19 +54,35 @@ fn like_escaped(prefix: &str) -> String {
         .collect()
 }
 
+/// Chars replaced with a space before a string becomes an FTS5 `MATCH` expr.
+///
+/// Single source of truth for [`fts5_match_expr`] and [`fts5_match_expr_joined`]
+/// (the latter delegates to the former, so drift is structurally impossible).
+/// `*\"():{}=-/\\` is the HEAD set; `?.,+!^~&|` is the hook-kill set: each breaks
+/// `MATCH` as a loose term (`?` measured failing on a real question; `.` `,`
+/// `+` `!` `^` `~` `&` `|` verified against FTS5 the same way — glued `emissao<c>`
+/// fails for all of them, and spaced `a <c> b` fails for all but `+`/`^`, which
+/// still fail glued e.g. `C++`). `/` was already in the HEAD set.
+const FTS5_STRIP_CHARS: &str = "*\"():{}=-/\\?.,+!^~&|";
+
 /// Build an FTS5 `MATCH` expression with the default (AND) conjunction.
 ///
 /// Byte-identical in behaviour to the inline sanitisation in `Store::search` at
-/// HEAD d5f8939: replace FTS5 specials with space, trim. Space-separated terms
+/// HEAD d5f8939, extended with the hook-kill set (see [`FTS5_STRIP_CHARS`]):
+/// replace FTS5 specials with space, trim. Space-separated terms
 /// are implicit AND in FTS5. No separator/quoting overhaul — that stays a
 /// future decision.
 pub fn fts5_match_expr(q: &str) -> String {
-    q.replace(|c: char| "*\"():{}=-/\\".contains(c), " ")
+    q.replace(|c: char| FTS5_STRIP_CHARS.contains(c), " ")
         .trim()
         .to_string()
 }
 
 /// Same sanitisation as [`fts5_match_expr`], but terms joined with `conj`.
+///
+/// The strip charset is [`FTS5_STRIP_CHARS`], shared via delegation to
+/// [`fts5_match_expr`] below — byte-identical between the two by construction,
+/// never two literals to drift.
 ///
 /// Only `"OR"` (case-insensitive) changes the output: terms joined with
 /// `" OR "`. Any other `conj` returns the default AND form verbatim, so
@@ -2432,9 +2448,53 @@ mod tests {
         let tricky = "a:b (c)";
         assert!(!fts5_match_expr(tricky).contains([':', '(', ')']));
         assert!(!fts5_match_expr_joined(tricky, "OR").contains([':', '(', ')']));
+        // Hook-kill set: each of ?.,+!^~&| stripped in BOTH fns (glued form,
+        // the way a real hook question carries them). `/` was HEAD already.
+        for c in ['?', '.', ',', '+', '!', '^', '~', '&', '|'] {
+            let glued = format!("emissao{c}");
+            assert!(!fts5_match_expr(&glued).contains(c), "plain keeps {c:?}");
+            assert!(!fts5_match_expr_joined(&glued, "OR").contains(c), "joined keeps {c:?}");
+        }
         // A user-typed operator must not double: "a OR b" joins to one OR, not three.
         assert_eq!(fts5_match_expr_joined("a OR b", "OR"), "a OR b");
         assert_eq!(fts5_match_expr_joined("a or AND not b", "OR"), "a OR b");
+    }
+
+    #[test]
+    fn test_fts5_hook_question_mark_searchable_with_valid_rank() {
+        // Real hook failure: "...emissão?" kept `?`, FTS5 errored
+        // (`syntax error near "?"`), the FTS stream emptied. Now the expr
+        // carries no `?` and the MATCH runs clean with a valid rank.
+        let q = "como faco emissao?";
+        let expr = fts5_match_expr(q);
+        assert!(!expr.contains('?'), "expr keeps '?': {expr:?}");
+        assert_eq!(fts5_match_expr_joined(q, "AND"), expr);
+        let s = test_store();
+        s.note_upsert(
+            "regras/global/emissao",
+            "regras",
+            Some("global"),
+            "## como faco emissao de nota fiscal",
+            None,
+            &[],
+            false,
+            None,
+        )
+        .unwrap();
+        // Raw `?` form errors at the SQLite layer — proves the strip is load-bearing.
+        assert!(s.fts_candidates(q, None).is_err(), "expected FTS5 to reject '?', it did not");
+        // Sanitised form: no error, non-empty, finite rank.
+        let cands = s.fts_candidates(&expr, None).unwrap();
+        assert!(!cands.is_empty(), "FTS found nothing for {expr:?}");
+        assert!(cands.iter().any(|(t, _)| t.contains("emissao")), "got {:?}", cands);
+        for (t, rank) in &cands {
+            assert!(rank.is_finite(), "non-finite rank for {t}: {rank}");
+        }
+        // End-to-end FTS-only search (no vector) recalls the note.
+        let res = s.search(q, None, None, None, None, None, 5, false).unwrap();
+        assert!(res.iter().any(|r| r.path.contains("emissao")), "got {:?}", res.iter().map(|r| &r.path).collect::<Vec<_>>());
+        // OR contract intact: user "a OR b" stays exactly that.
+        assert_eq!(fts5_match_expr_joined("a OR b", "OR"), "a OR b");
     }
 
     #[test]
