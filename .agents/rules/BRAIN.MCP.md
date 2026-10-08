@@ -67,6 +67,7 @@ Quando o Brain MCP está configurado, os agentes têm acesso a estas tools:
 | `query` | string | ✅ | — | Texto da busca semântica |
 | `layer` | string | ❌ | `null` | Filtrar por camada |
 | `scope` | string | ❌ | `null` | Filtrar por scope (`projetos` ou `global`) |
+| `project` | string | ❌ | `null` | Filtrar por projeto: notas **owned** (`notes.project_id`) + **linked** (`note_projects`). Os dois streams (FTS e vetor) aplicam o filtro antes do top-50, e o post-filter aceita as duas fontes — sem isso o vetor linked era descartado antes do RRF. `sessoes` com `project_id NULL` e sem link é **invisível** sob filtro: linkar via `brain_project_link`, nunca mudar posse silenciosamente. Nome inexistente → 0 resultados, sem erro. `mobile` ≠ `mobile-erp` ≠ `mobile_erp` ≠ `progaterp` (ids distintos; typo em `brain_store.project` cria projeto novo em silêncio — conferir com `brain_project_list` antes de filtrar) |
 | `top_k` | integer | ❌ | `5` | Máximo de resultados |
 
 #### `brain_store`

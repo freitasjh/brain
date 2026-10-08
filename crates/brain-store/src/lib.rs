@@ -1622,23 +1622,59 @@ impl Store {
         Ok(self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?)
     }
 
+    /// Run one FTS5 `MATCH` and return `(title, rank)` pairs, unsorted.
+    ///
+    /// When `project_id` is `Some`, the `project` filter is applied **inside**
+    /// the FTS query (join against `notes` + `note_projects`) before the
+    /// `LIMIT 50`, so a project-relevant note past the global top-50 still
+    /// enters the RRF. Ownership (`notes.project_id`) and links
+    /// (`note_projects`) are the same two sources the post-filter accepts, so
+    /// the candidate set and the filter cannot disagree. No DDL: the join
+    /// reads the existing tables.
+    fn fts_candidates(&self, match_expr: &str, project_id: Option<i64>) -> Result<Vec<(String, f64)>> {
+        if let Some(pid) = project_id {
+            let mut stmt = self.conn.prepare(
+                "SELECT f.title, f.rank FROM notes_fts f JOIN notes n ON n.path = f.title WHERE notes_fts MATCH ?1 AND (n.project_id = ?2 OR n.path IN (SELECT note_path FROM note_projects WHERE project_id = ?3)) ORDER BY rank LIMIT 50")?;
+            let rows = stmt.query_map(params![match_expr, pid, pid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            })?;
+            let ranked = rows.collect::<Result<Vec<_>, _>>()?;
+            return Ok(ranked);
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT title, rank FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 50")?;
+        let rows = stmt.query_map(params![match_expr], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        })?;
+        let ranked = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(ranked)
+    }
+
     // search: FTS + vector cosine (Rust-side) + entity + graph RRF — batch optimized (TD-001 C1/C2/C3/A1)
     pub fn search(&self, query: &str, query_vec: Option<&[f32]>, layer: Option<&str>, scope: Option<&str>, project: Option<&str>, tag: Option<&str>, top_k: usize, explain: bool) -> Result<Vec<SearchResult>> {
         use std::collections::HashSet;
         let now = Utc::now().to_rfc3339();
-        // 1. FTS candidates — A1 escape FTS5 specials
+        // Resolve the project filter once, up front, so the FTS candidate
+        // query, the vector scan and the post-filter all agree on what
+        // `project=X` means: owned (`notes.project_id`) OR linked
+        // (`note_projects`). A name with no row keeps the old contract:
+        // every stream empties and the search returns no rows, without error.
+        let project_id_filter: Option<i64> = if let Some(pname) = project {
+            self.conn.query_row("SELECT id FROM projects WHERE name=?1", params![pname], |r| r.get(0)).optional()?.flatten()
+        } else { None };
+        let missing_project = project.is_some() && project_id_filter.is_none();
+        // 1. FTS candidates (project filter applied inside the query, before LIMIT)
         let mut fts_scores: HashMap<String, f32> = HashMap::new();
         let mut fts_rank: HashMap<String, usize> = HashMap::new();
-        if !query.trim().is_empty() {
+        if !missing_project && !query.trim().is_empty() {
             // A1: escape FTS5 specials + SQL ops to prevent syntax error / injection
             let sanitized = query.replace(|c: char| "*\"():{}=-/\\".contains(c), " ");
             let sanitized = sanitized.trim().to_string();
             if !sanitized.is_empty() {
-                let mut stmt = self.conn.prepare("SELECT title, rank FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 50")?;
-                match stmt.query_map(params![sanitized], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?))) {
-                    Ok(rows) => {
-                        let mut ranked: Vec<(String,f64)> = rows.collect::<Result<Vec<_>,_>>()?;
-                        ranked.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap());
+                match self.fts_candidates(&sanitized, project_id_filter) {
+                    Ok(mut ranked) => {
+                        ranked.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                         for (i, (p,_)) in ranked.iter().enumerate() {
                             let score = 1.0/(60.0 + (i as f32 +1.0));
                             fts_scores.insert(p.clone(), score);
@@ -1651,7 +1687,11 @@ impl Store {
                 }
             }
         }
-        // 2. vector cosine candidates (scan chunks) — C3 pre-filter by layer/scope/project_id
+        // 2. vector cosine candidates (scan chunks) — pre-filter by layer/scope/project.
+        // The project pre-filter is path-based (notes ownership UNION note_projects
+        // links), never `chunks.project_id = ?`: a linked note's chunks carry the
+        // owner's id (or NULL), so an owned-only predicate discarded every linked
+        // vector before the truncate(50) and the post-filter never saw them.
         let mut vec_scores: HashMap<String, f32> = HashMap::new();
         let mut vec_rank: HashMap<String, usize> = HashMap::new();
         if let Some(qv) = query_vec {
@@ -1663,19 +1703,14 @@ impl Store {
                     }
                 }
             }
-            // resolve project_id for vector pre-filter
-            let project_id_filter: Option<i64> = if let Some(pname) = project {
-                self.conn.query_row("SELECT id FROM projects WHERE name=?1", params![pname], |r| r.get(0)).optional()?.flatten().or(None)
-            } else { None };
             // if project filter present but project not found, skip vector scan (no matches)
-            let skip_vector_due_missing_project = project.is_some() && project_id_filter.is_none();
-            if !skip_vector_due_missing_project {
+            if !missing_project {
                 let mut sql = "SELECT path, snippet, layer, scope, tags, embedding, chunk_index, project_id FROM chunks WHERE embedding IS NOT NULL".to_string();
                 let mut filter_params: Vec<String> = Vec::new();
                 let mut filter_sql_parts: Vec<String> = Vec::new();
                 if let Some(lf) = layer { filter_sql_parts.push("layer = ?".to_string()); filter_params.push(lf.to_string()); }
                 if let Some(sf) = scope { filter_sql_parts.push("scope = ?".to_string()); filter_params.push(sf.to_string()); }
-                if let Some(pid) = project_id_filter { filter_sql_parts.push("project_id = ?".to_string()); filter_params.push(pid.to_string()); }
+                if let Some(pid) = project_id_filter { filter_sql_parts.push("(path IN (SELECT path FROM notes WHERE project_id = ? UNION SELECT note_path FROM note_projects WHERE project_id = ?))".to_string()); filter_params.push(pid.to_string()); filter_params.push(pid.to_string()); }
                 if !filter_sql_parts.is_empty() {
                     sql.push_str(" AND ");
                     sql.push_str(&filter_sql_parts.join(" AND "));
@@ -1770,12 +1805,12 @@ impl Store {
             let pinned: i32 = r.get(6)?;
             meta_map.insert(path, (layer_v, scope_v, expires_v, tags_s, pid, pinned));
         }
-        // project linked batch: if project filter present, fetch linked set in one query
+        // project linked batch: if project filter present, fetch linked set in one query.
+        // Reuses the `project_id_filter` resolved once at the top of `search`,
+        // so the candidate queries and this post-filter agree by construction.
         let mut linked_set: HashSet<String> = HashSet::new();
-        let mut project_id_filter_opt: Option<i64> = None;
-        if let Some(pf) = project {
-            if let Some(pid) = self.conn.query_row("SELECT id FROM projects WHERE name=?1", params![pf], |r| r.get::<_,i64>(0)).optional()? {
-                project_id_filter_opt = Some(pid);
+        let project_id_filter_opt: Option<i64> = project_id_filter;
+        if project.is_some() && project_id_filter_opt.is_some() && !all_paths.is_empty() {
                 let placeholders3 = vec!["?"; all_paths.len()].join(",");
                 let sql3 = format!("SELECT note_path, project_id FROM note_projects WHERE note_path IN ({})", placeholders3);
                 let mut stmt3 = self.conn.prepare(&sql3)?;
@@ -1788,7 +1823,6 @@ impl Store {
                         linked_set.insert(np);
                     }
                 }
-            }
         }
         let mut filtered_paths = Vec::new();
         for p in &all_paths {
@@ -2423,6 +2457,103 @@ mod tests {
         s.note_link_project("regras/global/linked-proj", "myproj").unwrap();
         let res2 = s.search("project filtered", None, None, None, Some("myproj"), None, 10, false).unwrap();
         assert!(res2.iter().any(|r| r.path=="regras/global/linked-proj"));
+    }
+
+    /// T1 — the vector stream sees linked notes, not just owned ones.
+    ///
+    /// The query text matches nothing (`nomatch-zzz-vector-only` is in no
+    /// note), so the FTS stream is empty and any hit must come from the
+    /// vector stream. The linked note's chunks carry the *owner's*
+    /// `project_id`, so the old `chunks.project_id = ?` pre-filter discarded
+    /// them before `truncate(50)`. Mutation: restoring `project_id = ?`
+    /// returns only the owned note and this test fails on the linked assert.
+    #[test]
+    fn project_filter_vector_stream_includes_linked_notes() {
+        let s = test_store();
+        let proj_a = s.project_create("projvec-a", "").unwrap();
+        let proj_b = s.project_create("projvec-b", "").unwrap();
+        let qv = fixture_vec(5);
+        let nid_o = s.note_upsert("regras/global/vec-owned", "regras", Some("global"), "## alpha owned token", Some(proj_a.id), &[], false, None).unwrap();
+        s.chunk_insert(nid_o, "regras/global/vec-owned", "regras", Some("global"), "alpha owned token", 0, 1, Some(proj_a.id), &[], Some(&qv)).unwrap();
+        let nid_l = s.note_upsert("regras/global/vec-linked", "regras", Some("global"), "## beta linked token", Some(proj_b.id), &[], false, None).unwrap();
+        s.chunk_insert(nid_l, "regras/global/vec-linked", "regras", Some("global"), "beta linked token", 0, 1, Some(proj_b.id), &[], Some(&qv)).unwrap();
+        s.note_link_project("regras/global/vec-linked", "projvec-a").unwrap();
+        let res = s.search("nomatch-zzz-vector-only", Some(&qv), None, None, Some("projvec-a"), None, 10, true).unwrap();
+        let paths: Vec<&str> = res.iter().map(|r| r.path.as_str()).collect();
+        assert!(paths.contains(&"regras/global/vec-owned"), "owned note missing from vector stream: {paths:?}");
+        assert!(paths.contains(&"regras/global/vec-linked"), "linked note missing from vector stream: {paths:?}");
+        for want in ["regras/global/vec-owned", "regras/global/vec-linked"] {
+            let hit = res.iter().find(|r| r.path == want).unwrap();
+            let vec_score = hit.explain.as_ref().map(|e| e.rrf_vec).unwrap_or(0.0);
+            assert!(vec_score > 0.0, "{want} arrived without the vector stream (rrf_vec={vec_score})");
+        }
+    }
+
+    /// T2 — a `sessoes` note with `project_id NULL` is invisible under a
+    /// `project` filter until it is linked via `note_projects`. Ownership is
+    /// never assigned silently; the test links explicitly, which is the only
+    /// supported way for a session note to join a project.
+    #[test]
+    fn project_filter_session_note_needs_a_link_to_appear() {
+        let s = test_store();
+        s.project_create("proj-sess", "").unwrap();
+        s.note_upsert("sessoes/proj-sess/2026-01-01", "sessoes", None, "## sessao token unico s2 alvo", None, &[], false, None).unwrap();
+        let hidden = s.search("sessao unico alvo", None, None, None, Some("proj-sess"), None, 10, false).unwrap();
+        assert!(!hidden.iter().any(|r| r.path == "sessoes/proj-sess/2026-01-01"), "unlinked session note leaked into project filter: {:?}", hidden.iter().map(|r| &r.path).collect::<Vec<_>>());
+        s.note_link_project("sessoes/proj-sess/2026-01-01", "proj-sess").unwrap();
+        let shown = s.search("sessao unico alvo", None, None, None, Some("proj-sess"), None, 10, false).unwrap();
+        assert!(shown.iter().any(|r| r.path == "sessoes/proj-sess/2026-01-01"), "linked session note missing from project filter");
+    }
+
+    /// T3 — a `project` name with no row is an empty result, not an error,
+    /// on both the FTS and the vector streams.
+    #[test]
+    fn project_filter_unknown_project_returns_empty_without_error() {
+        let s = test_store();
+        let proj = s.project_create("proj-real", "").unwrap();
+        let nid = s.note_upsert("regras/global/real-note", "regras", Some("global"), "## real content token", Some(proj.id), &[], false, None).unwrap();
+        let qv = fixture_vec(1);
+        s.chunk_insert(nid, "regras/global/real-note", "regras", Some("global"), "real content token", 0, 1, Some(proj.id), &[], Some(&qv)).unwrap();
+        let res = s.search("real content", Some(&qv), None, None, Some("no-such-proj"), None, 10, false).unwrap();
+        assert!(res.is_empty(), "unknown project must match nothing, got {:?}", res.iter().map(|r| &r.path).collect::<Vec<_>>());
+    }
+
+    /// T4 — isolation: a note owned by another project with no link never
+    /// appears, even when both its text and its vector match the query.
+    /// `mobile-t4` vs `progaterp-t4` stand in for the production pair
+    /// `mobile` (id 2) vs `progaterp` (id 6), which share vocabulary but no
+    /// ownership.
+    #[test]
+    fn project_filter_never_leaks_an_unlinked_owner() {
+        let s = test_store();
+        s.project_create("mobile-t4", "").unwrap();
+        let proga = s.project_create("progaterp-t4", "").unwrap();
+        let qv = fixture_vec(9);
+        let nid = s.note_upsert("regras/global/secret-t4", "regras", Some("global"), "## mobile devolucao offline token t4", Some(proga.id), &[], false, None).unwrap();
+        s.chunk_insert(nid, "regras/global/secret-t4", "regras", Some("global"), "mobile devolucao offline token t4", 0, 1, Some(proga.id), &[], Some(&qv)).unwrap();
+        let res = s.search("mobile devolucao offline token t4", Some(&qv), None, None, Some("mobile-t4"), None, 10, true).unwrap();
+        assert!(!res.iter().any(|r| r.path == "regras/global/secret-t4"), "unlinked owner leaked across projects: {:?}", res.iter().map(|r| &r.path).collect::<Vec<_>>());
+        let sanity = s.search("mobile devolucao offline token t4", Some(&qv), None, None, Some("progaterp-t4"), None, 10, false).unwrap();
+        assert!(sanity.iter().any(|r| r.path == "regras/global/secret-t4"), "owner project lost its own note");
+    }
+
+    /// T5 — the `project` filter is applied inside the FTS query, before
+    /// `LIMIT 50`. Sixty distractors share the query token but belong to no
+    /// project; the target is inserted last (highest rowid), so a global
+    /// top-50 followed by a post-filter would cut it and return nothing.
+    #[test]
+    fn project_filter_fts_finds_a_target_past_the_global_top_50() {
+        let s = test_store();
+        let proj = s.project_create("proj-fts50", "").unwrap();
+        for i in 0..60 {
+            s.note_upsert(&format!("regras/global/distra-{i:02}"), "regras", Some("global"), "## tokencomum distrator", None, &[], false, None).unwrap();
+        }
+        s.note_upsert("regras/global/alvo-fts50", "regras", Some("global"), "## tokencomum alvo", Some(proj.id), &[], false, None).unwrap();
+        let res = s.search("tokencomum", None, None, None, Some("proj-fts50"), None, 10, true).unwrap();
+        assert!(res.iter().any(|r| r.path == "regras/global/alvo-fts50"), "project target past the global top-50 was cut");
+        assert!(!res.iter().any(|r| r.path.starts_with("regras/global/distra-")), "distractor without project leaked into filtered FTS");
+        let hit = res.iter().find(|r| r.path == "regras/global/alvo-fts50").unwrap();
+        assert!(hit.explain.as_ref().map(|e| e.rrf_fts).unwrap_or(0.0) > 0.0, "target arrived without the FTS stream");
     }
 
     #[test]
