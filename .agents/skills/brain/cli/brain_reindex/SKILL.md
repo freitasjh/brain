@@ -9,9 +9,14 @@ description: >
 
 Reconstrói chunks + embeddings do cérebro.
 
-> **Não é uma tool MCP.** Hoje o reindex é um comando de CLI
-> (`brain reindex --all [--no-embed]`). Não chame `brain_reindex(...)` como tool:
-> o servidor MCP não a expõe.
+> **Não é uma tool MCP.** É o subcomando de CLI `brain reindex --all
+> [--no-embed]` (`brain-cli:84`). Não chame `brain_reindex(...)` como tool: o
+> servidor MCP não a expõe, e `tools/` aqui tem uma pasta por tool MCP — por isso
+> esta skill mora em `cli/`, não em `tools/`.
+>
+> Para o que **é** tool MCP e tem skill própria em `tools/`, veja
+> `brain_status` (é ele que diz se o reindex é o remédio) e `brain_store` (que
+> mantém os vetores em dia sozinho, sem reindex).
 
 ## Quando usar
 

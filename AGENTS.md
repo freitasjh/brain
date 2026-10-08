@@ -95,13 +95,16 @@ BRAIN_URL=http://localhost:9000 uv run brain ping
 
 | Comando | Descrição |
 |---------|-----------|
-| `brain setup all` | One-shot: MCP + rules + systemd |
-| `brain setup copilot` | Apenas MCP server do brain para Copilot |
-| `brain setup copilot-instructions` | Rules de como USAR brain para Copilot Chat |
-| `brain setup kiro` | Apenas MCP server do brain para Kiro |
-| `brain setup kiro-steering` | Steering rules de como USAR brain para Kiro |
-| `brain setup opencode` | MCP server do brain para OpenCode |
+| `brain setup all` | One-shot: **pergunta a IDE** (opencode\|kiro) e instala uma + systemd + shell. Sem tty assume `opencode` e avisa; `kiro` nao entra por padrao |
+| `brain setup opencode` | MCP do brain + plugin de sessao `~/.config/opencode/plugins/brain-session.js` |
+| `brain setup kiro` | Hook de sessao `.kiro/hooks/brain-session.json` (**dentro do projeto**) |
 | `brain setup systemd` | Serviço systemd user para auto-start |
+| `brain setup --project <nome>` | Grava a decisão de projeto do diretório em `config.json`, sem perguntar |
+| `brain setup --decline-project` | Grava a recusa (`motivo: "recusado"`), sem perguntar |
+| `brain setup --yes` | Não interativo: assume defaults, não pergunta, não grava projeto. Equivalente a `BRAIN_SETUP_NONINTERACTIVE=1` |
+
+O `setup` é o **único** produtor de `config.json` em produção: `brain hook` não
+pergunta (IDE não dá tty), então quem responde é o `setup`. Ver `brain setup --help`.
 
 ## Tools MCP expostas
 
@@ -117,7 +120,7 @@ BRAIN_URL=http://localhost:9000 uv run brain ping
 | `brain_checkpoints(limit?)` | Audit log `action/path/at` |
 | `brain_restore_page(id)` | Restore versão audit |
 | `brain_backup(to?)` | `cp brain.db → .bak`. Sem `to` = `{db}.bak` (sempre permitido); com `to` precisa ser absoluto, terminar em `.bak` e estar **dentro de `BRAIN_EXPORT_ROOT`** |
-| `brain_export(to?, force?)` | Dump `{BRAIN_EXPORT_ROOT}/layer/scope/path.md` temp. `to` é restringido à raiz (allowlist, canonicalizada), e a raiz precisa ser **diretório, do nosso euid, e não gravável por `other`** — senão outro usuário local que tenha criado `/tmp/brain-export` antes do primeiro start lê o corpus e o `.bak` do banco (checado em `export_dir` e **de novo depois** do `create_dir_all`, para fechar a janela de TOCTOU). O path de cada nota é rechecado na escrita — verificado no wiring por `crates/brain-mcp/tests/export_guard.rs::a_stored_path_that_climbs_out_of_the_export_root_is_not_written`, que planta uma row com `path='../escape'` por SQL e roda o `POST /mcp/export` de verdade. Responde `{ok,to,written,refused}` |
+| `brain_export(to?, force?)` | Dump `{BRAIN_EXPORT_ROOT}/layer/scope/path` temp. `to` é restringido à raiz (allowlist, canonicalizada), e a raiz precisa ser **diretório, do nosso euid, e não gravável por `other`** — senão outro usuário local que tenha criado `/tmp/brain-export` antes do primeiro start lê o corpus e o `.bak` do banco (checado em `export_dir` e **de novo depois** do `create_dir_all`, para fechar a janela de TOCTOU). O path de cada nota é rechecado na escrita — verificado no wiring por `crates/brain-mcp/tests/export_guard.rs::a_stored_path_that_climbs_out_of_the_export_root_is_not_written`, que planta uma row com `path='../escape'` por SQL e roda o `POST /mcp/export` de verdade. Responde `{ok,to,written,refused}` |
 | `brain_forget_sweep(dry_run?)` | TTL `expires_at` hard-delete (pin não vence) |
 | `brain_reindex` (CLI `brain reindex --all [--no-embed]`) | **Não destrutivo**: nunca `DELETE FROM chunks`; reusa vetores whose texto ainda bate. Embeda antes da transação e reporta `REINDEX_DONE notes= chunks= embedded= preserved= rehydrated= null= diverged= stale_reused= unmatched=`. `diverged>0` = nota editada durante o run, vetor stale **não** aplicado (`REINDEX_DIVERGED`). Rejeita se outro embed segura o lock |
 | `brain_project_create(name, description?)` | Cria projeto |
@@ -273,8 +276,6 @@ verdade** para rules/instructions/steering de cada IA:
 
 | Arquivo | Instalado por | Destino |
 |---------|---------------|---------|
-| `hooks/brain-copilot-instructions.md` | `brain setup copilot-instructions` | `~/.config/Code/User/brain-copilot-instructions.md` |
-| `hooks/brain-kiro-steering.md` | `brain setup kiro-steering` | `~/.kiro/steering/brain.md` |
 
 **Sempre** que alterar um desses hooks, o instalador correspondente deve ser
 atualizado OU a fonte do hook deve ser usada (cópia literal do arquivo).

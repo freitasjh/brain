@@ -3,6 +3,7 @@ name: brain
 description: >
   Connect to the Brain MCP server — 17 tools: hybrid semantic search, note
   storage with a background embedding queue, projects, audit/restore, TTL.
+  Per-tool detail lives in tools/<tool>/SKILL.md, one directory per MCP tool.
   Carregue esta skill em qualquer projeto OpenCode para dar aos seus agentes
   memória persistente entre sessões. Armazenamento é SQLite (WAL + FTS5) com
   vetores 768-d do Ollama — não há vault de arquivos.
@@ -23,11 +24,11 @@ O servidor brain precisa estar rodando:
 
 ```bash
 # No repositório brain:
-cd <caminho-para-brain>
-uv run python -m brain_server
+brain serve-mcp          # MCP SSE em http://localhost:8321/sse
 ```
 
-O servidor escuta em `http://localhost:8321` (SSE transport).
+O `brain` aqui é o binário Rust (`cargo run -p brain-cli -- serve-mcp`, ou o
+binário instalado). O viewer web read-only é `brain serve` (porta 8322).
 
 ## Como usar
 
@@ -41,172 +42,124 @@ No `opencode.json` do seu projeto, referencie esta skill:
 }
 ```
 
-## Tools expostas
+## As 17 tools MCP
 
-### `brain_search(query, [layer], [scope], [top_k])`
+Uma pasta por tool em `tools/`, com o detalhe de cada uma (parâmetros, retorno,
+o que não fazer): `.agents/skills/brain/tools/<tool>/SKILL.md`.
 
-Busca semântica por similaridade de embedding no vault do cérebro.
+### As 4 que você usa sempre
 
-```python
-# Exemplo: buscar regras de banco de dados
-brain_search("regras de banco de dados")
-# Resultados ordenados por score (0..1)
+| Tool | Assinatura | O que faz |
+|------|-------------|-----------|
+| `brain_search` | `(query, layer?, scope?, project?, tag?, top_k?)` | Busca híbrida FTS5+vetor (RRF). **Chame antes de codar** |
+| `brain_store` | `(layer, path, content, scope?, project?, tags?, pinned?, expires_at?)` | Salva nota. `scope` **obrigatório** em `arquitetura`/`regras`/`estudos` |
+| `brain_read` | `(path)` | Lê uma nota. **Um parâmetro só** — `path` é o completo `layer/scope/path` |
+| `brain_status` | `()` | Contagens + cobertura do embedding + estado da fila |
 
-# Filtrar por camada
-brain_search("naming conventions", layer="regras")
+### As 13 restantes
 
-# Filtrar por scope (projetos ou global)
-brain_search("padrões de código", scope="global")
-brain_search("regras do meu projeto", scope="projetos")
+| Tool | Assinatura | O que faz |
+|------|-------------|-----------|
+| `ping` | `()` | Health-check → `{"pong": true}` |
+| `brain_recent` | `(top_k?)` | Notas mais recentes, com o conteúdo inteiro |
+| `brain_checkpoints` | `(limit?)` | Audit log: `create`/`update`/`delete` com o `id` do restore |
+| `brain_restore` | `(id)` | ⚠️ **Sobrescreve** a nota. Ver skill antes de usar |
+| `brain_delete` | `(path)` | ⚠️ **Apaga** a nota e seus chunks |
+| `brain_forget_sweep` | `(dry_run?)` | ⚠️ **Apaga** tudo que está vencido. Sempre `--dry-run` antes |
+| `brain_export` | `(to?, force?)` | ⚠️ Escreve as notas como arquivos, só dentro de `BRAIN_EXPORT_ROOT` |
+| `brain_backup` | `(to?)` | ⚠️ Copia o `brain.db` inteiro para um `.bak` |
+| `brain_project_create` | `(name, description?)` | Cria projeto |
+| `brain_project_list` | `()` | Lista projetos |
+| `brain_project_notes` | `(name)` | Notas owned + linked de um projeto |
+| `brain_project_link` | `(note_path, project)` | Liga nota a um projeto (many-to-many) |
+| `brain_project_unlink` | `(note_path, project)` | Desliga. **Não apaga a nota** |
 
-# Combinar layer e scope
-brain_search("arquitetura do sistema", layer="arquitetura", scope="global")
+⚠️ = tem efeito destrutivo ou escreve em disco. As 5 têm skill própria com a
+seção "O que NÃO fazer" — **leia antes de chamar**.
 
-# Controlar quantidade de resultados
-brain_search("arquitetura do sistema", top_k=3)
+### Não é tool MCP
+
+- **`brain reindex --all [--no-embed]`** — subcomando de **CLI**
+  (`brain-cli:84`), não está no registro MCP. Skill em
+  `.agents/skills/brain/cli/brain_reindex/SKILL.md`.
+- **`brain_project_delete`**, `brain_migrate`, `brain serve`, `brain server
+  start`, `brain setup`, `brain hook` — todos CLI (`brain-cli:66-115`).
+
+Se você viu um nome de tool numa tabela que não está na lista de cima, ele é de
+CLI. Isso já aconteceu: `brain_reindex` e `brain_delete_page` aparecem em
+documentação antiga e não são tools.
+
+## O contrato assíncrono do `brain_store`
+
+**Uma escrita não espera por vetor.** É o comportamento central, e o motivo de
+`brain_status` existir.
+
+```json
+{"ok": true, "path": "regras/projetos/meu-projeto/naming",
+ "chunks": 4, "embedded": 0, "without_embedding": 4, "queued": 4}
 ```
 
-**Parâmetros:**
-| Nome | Tipo | Obrigatório | Default | Descrição |
-|------|------|-------------|---------|-----------|
-| `query` | string | ✅ | — | Texto da busca |
-| `layer` | string | ❌ | `null` | Filtrar por camada |
-| `scope` | string | ❌ | `null` | Filtrar por scope (`projetos` ou `global`) |
-| `top_k` | integer | ❌ | `5` | Máx resultados (1–20) |
+`embedded: 0` numa nota nova **não é bug** e `queued: 4` **não é erro**. O que a
+tool garante no momento do retorno é: nota gravada e **FTS5 populado**. O vetor
+chega depois, em background. Medido no caminho MCP real, a escrita de 64 chunks
+volta em **0.019 s** e os 64 vetores chegam ~2.8 s depois.
 
-### `brain_store(layer, path, content, [scope])`
+Para saber se a fila está andando:
 
-Salva uma nota markdown no vault. O conteúdo é automaticamente indexado para busca semântica.
-
-```python
-# Salvar decisão arquitetural (scope obrigatório para arquitetura/regras)
-brain_store(
-    layer="arquitetura",
-    path="meu-projeto/decisao-db",
-    content="# Decisão: PostgreSQL\n\n## Contexto\nPrecisamos de um banco relacional...",
-    scope="projetos"  # específico do projeto
-)
-
-# Salvar regra de negócio (scope obrigatório)
-brain_store(
-    layer="regras",
-    path="meu-projeto/naming-conventions",
-    content="## Nomes de tabela\nTabelas em snake_case plural...",
-    scope="projetos"  # específico do projeto
-)
-
-# Salvar lição global (compartilhada entre todos os projetos)
-brain_store(
-    layer="regras",
-    path="coding-standards",
-    content="## Padrões universais\n\n- Nunca usar SELECT *\n- Sempre validar input...",
-    scope="global"  # compartilhado
-)
-
-# Salvar sessão (scope NÃO necessário para sessoes/projetos)
-brain_store(
-    layer="sessoes",
-    path="meu-projeto/2026-07-25",
-    content="## Sessão\n\nTrabalhei em..."
-)
+```
+brain_status.embedding.coverage.embedding_coverage_pct
 ```
 
-**Camadas válidas:** `arquitetura`, `regras`, `sessoes`, `projetos`, `estudos`, `indexacao`
+Esse número **é** o sinal de fila travada. Chunk esperando vetor conta como
+`without_embedding`, **nunca** como `zero_vector` — os dois são estados
+diferentes e a diferença é o diagnóstico:
 
-**Scope obrigatório:** `arquitetura` e `regras` e `estudos` exigem `scope="projetos"` ou `scope="global"`
+| Sinal | Significado | O que fazer |
+|---|---|---|
+| `coverage_pct` < 100, `without_embedding` > 0, `queue.pending_len` caindo | fila working | esperar |
+| `coverage_pct` < 100, `pending_len` parado, `ready_len` > 0 | fila em backoff | esperar o backoff |
+| `queue.dead_lettered` > 0 | a fila **desistiu** | `brain reindex --all`, ou o `recover` do próximo boot |
+| `chunks_zero_vector` > 0 | índice corrompido (BLOB de zeros) | `brain reindex --all` |
 
-**Retorno:** `{ok, path, chunks, embedded, without_embedding, queued}`
+`dead_lettered` **não é perda de dado**: o chunk fica `NULL`, e `NULL` é
+exatamente o registro que o `recover` do próximo boot e o `reindex --all` leem.
 
-| Campo | Significado |
-|-------|-------------|
-| `chunks` | chunks que a nota gerou |
-| `embedded` | chunks **já** com vetor (0 numa nota nova) |
-| `without_embedding` | chunks `NULL`, aguardando vetor |
-| `queued` | dívida de embedding enfileirada para background |
+O bloco `queue` completo está em `tools/brain_status/SKILL.md`.
 
-O vetor **não** é síncrono (US-02.7): a nota e seu índice FTS5 estão gravados
-quando a chamada retorna, e os vetores chegam em background. Se a busca
-semântica não achar a nota de imediato, isso é o motivo — releia
-`brain_status` e veja `embedding.coverage.embedding_coverage_pct`.
+## Limites de escrita
 
-**Limites de escrita** (rejeição *antes* de qualquer embed, erro nomeando o
-limite):
+Rejeitados **antes** de qualquer embed, com o nome do limite no erro:
 
 | Limite | Valor | Exceder |
 |--------|-------|---------|
 | `MAX_CONTENT_BYTES` | 256 KiB | `INVALID_PARAMS: content too large` |
 | `MAX_CHUNKS` | 64 (uma seção `## ` = 1 chunk) | `INVALID_PARAMS: content splits into N chunks` |
 
-Um chunk custa ~0.045 s para embedar e o Ollama serve **um por vez**, então os
-limites existem para que uma nota não vire trabalho de minutos. Se bater, divida
-em várias notas sob o mesmo projeto ou una as seções pequenas.
+Embed é serial (o Ollama serve um por vez, ~0.045 s/chunk), então o custo da
+escrita escalava com o número de chunks sem teto. Se bater, divida a nota em
+várias sob o mesmo projeto.
 
-### `brain_read(layer, path, [scope])`
+## Variáveis de ambiente
 
-Lê uma nota completa do vault.
+As que mudam o comportamento de um agente. Todas com prefixo `BRAIN_`.
 
-```python
-# Ler nota salva anteriormente (scope obrigatório para arquitetura/regras)
-brain_read("regras", "meu-projeto/naming-conventions", scope="projetos")
-# Retorna o conteúdo markdown completo com metadados
+| Variável | Default | O que faz |
+|----------|---------|-----------|
+| `BRAIN_DB_PATH` | `./data/brain.db` | Qual SQLite abrir |
+| `BRAIN_OLLAMA_URL` | `http://localhost:11434` | Onde está o Ollama. **Com Ollama fora a busca não quebra** — degrada para só texto |
+| `BRAIN_OLLAMA_MODEL` | `nomic-embed-text` | Modelo de embedding (768 dim) |
+| `BRAIN_EXPORT_ROOT` | `/tmp/brain-export` | **Allowlist de escrita** de `brain_export` e `brain_backup`. Qualquer destino fora é recusado |
+| `BRAIN_EMBED_MAX_FAILURES` | `8` | Tentativas de embed antes do dead-letter (≈1 min de backoff) |
+| `BRAIN_REUSE_SIMILARITY` | `1.0` | Abaixo de 1.0 um chunk pode herdar o vetor do texto antigo. **Não mexa** sem ler `brain_reindex` |
+| `BRAIN_EMBED_TIMEOUT_SECS` | `60` | Budget **base** por onda de embed |
+| `BRAIN_PORT` | `8321` | Porta do MCP SSE |
+| `BRAIN_TRANSPORT` | — | `stdio` em vez de SSE |
+| `BRAIN_HOOK_EMBED` | `1` | `0` desliga o embed no `brain hook` |
+| `BRAIN_VAULT_PATH` | — | ⚠️ **IGNORADA.** O campo foi removido do modelo; a variável não é lida |
 
-# Ler nota global
-brain_read("regras", "coding-standards", scope="global")
-
-# Ler sessão (scope não necessário)
-brain_read("sessoes", "meu-projeto/2026-07-25")
-```
-
-### `brain_status()`
-
-Contagens + a saúde do índice de embeddings.
-
-```json
-{
-  "notes": 253, "chunks": 821, "projects": 6,
-  "embedding": {
-    "coverage": {
-      "chunks_total": 821, "chunks_embedded": 821,
-      "chunks_without_embedding": 0, "chunks_zero_vector": 0,
-      "embedding_coverage_pct": 100.0
-    },
-    "ollama": { "reachable": true, "model": "nomic-embed-text" }
-  }
-}
-```
-
-`embedding_coverage_pct` é **o sinal de fila travada**: chunk esperando vetor conta
-como `without_embedding`, nunca como `zero_vector`. Um `zero_vector > 0` é um
-estado corrompido herdado (BLOB de zeros que scoreia 0.0 para toda query) e
-precisa de `brain reindex --all`.
-
-### Reindex — `brain reindex --all [--no-embed]` (CLI, não é tool MCP)
-
-Reconstroi chunks + embeddings. **Roda em foreground** (a passagem de embed de um
-corpo grande leva minutos) e é **não destrutivo**: nunca `DELETE FROM chunks`, e
-reaproveita o vetor de todo chunk cujo texto continua igual.
-
-```bash
-brain reindex --all              # reindexa + embeda o que falta
-brain reindex --all --no-embed   # só a parte estrutural; novos chunks ficam NULL
-```
-
-```
-REINDEX_DONE notes=253 chunks=821 embedded=821 preserved=814 rehydrated=7              null=0 diverged=0 stale_reused=0 unmatched=0
-```
-
-| Token | Significado |
-|-------|-------------|
-| `preserved` | vetores que sobreviveram do run anterior |
-| `rehydrated` | vetores recuperados nesta passagem |
-| `null` | chunks sem vetor — **precisa de outro run** |
-| `diverged` | vetor calculado de texto que a nota já não tem; **não** foi aplicado (nota editada durante o run). Sai `REINDEX_DIVERGED` |
-| `stale_reused` | vetores mantidos por similaridade. **Default `1.0` (exato)**: só aparece com opt-in `BRAIN_REUSE_SIMILARITY=0.9`. A guarda de força normativa (obrigação ↔ proibição) bloqueia o reuso **independentemente** desse threshold |
-| `unmatched` | vetores perdidos: o texto mudou demais para reaproveitar |
-
-Linhas extras: `REINDEX_PARTIAL` (há `null > 0`) e `REINDEX_DIVERGED` (há
-`diverged > 0`). Se outro embed segura o lock (a fila do servidor), o comando
-falha sem escrever nada — é para não duplicar trabalho.
+`BRAIN_VIEWER_PORT` e `BRAIN_LOG_LEVEL` aparecem em `CONFIGURE_MCP.md` e no
+`README`, mas são lidas **só pelo Python legado** — o binário Rust usa default
+fixo (`brain-cli:98`). Não espere que elas mudem o servidor Rust.
 
 ## Boas práticas para agentes
 

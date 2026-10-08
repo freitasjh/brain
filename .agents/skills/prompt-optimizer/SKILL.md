@@ -1,201 +1,174 @@
 ---
 name: prompt-optimizer
-description: "Prompt analysis and refinement. Detects vague/ambiguous requests and asks clarifying questions BEFORE any work begins. Eliminates guesswork. Mandatory first step for orchestrator."
+description: "Prompt analysis and refinement (v2). Avalia o pedido contra 6 elementos (PICCO) e decide entre 2 rotas: Rota A (não entendi) e Rota B (re-encoding com bloco PICCO em delimiter tags). Zero chute. Mandatory first step for orchestrator on every CHANGE request (read-only queries exempt)."
 ---
 
-# Prompt Optimizer
+# Prompt Optimizer v2
 
-Analisa prompt do usuário, detecta ambiguidades e faz perguntas clarificadoras ANTES de qualquer ação.
-
-## Quando Usar
-
-- **SEMPRE** no início de qualquer demanda (feature, bugfix, refactor)
-- **ANTES** de carregar qualquer outra skill
-- **ANTES** de delegar para qualquer subagente
+Portão de entrada de toda demanda: conta 6 elementos no prompt do usuário e escolhe entre parar e perguntar (Rota A) ou re-encodar e executar (Rota B).
 
 ## Regra Fundamental
 
-> 🚨 **NUNCA adivinhar.** Se o prompt for vago, ambíguo ou sem contexto suficiente, PERGUNTAR antes de prosseguir.
+O modelo **não para na sub-especificação**. Lê "melhorar o sistema", escolhe um default plausível, executa 300 linhas e só descobre no fim que era a coisa errada. O default do modelo **não é** o default do usuário — e o modelo não sinaliza qual dos dois usou.
+
+Por isso: **nunca assumir**. Um default escolhido por você é um palpite não marcado, que o usuário não vê e não pode corrigir. Lacuna em branco é lacuna; preenchê-la é inventar requisito.
+
+## Os 6 Elementos
+
+Score = elementos presentes / 6. **Presente = o usuário AFIRMOU**, não que a IA deduziu. Se você deduziu, o elemento está ausente.
+
+| # | Elemento | Pergunta de checagem | Ausente = |
+|---|----------|----------------------|-----------|
+| **E1** | Objetivo | O que muda no mundo quando isso estiver pronto? | crítico |
+| **E2** | Escopo | O que entra? O que NÃO entra? | crítico |
+| **E3** | Contexto | Módulo/domínio/tela/endpoint/feature afetado | alto |
+| **E4** | Restrições | O que não pode quebrar? (regra, contrato, compatibilidade) | alto |
+| **E5** | Critério de aceite | Como se sabe que ficou pronto? | médio |
+| **E6** | Intenção de rota | Feature / Bugfix / Refactor / Melhoria? | médio |
+
+E1 e E2 ausentes = gate fechado. Sem eles, qualquer interpretação é chute sobre o objetivo.
 
 ## Fluxo
 
 ```
-1. Receber prompt do usuário
-2. Carregar skill "brain" → brain_search(prompt, top_k=3)
-3. Analisar prompt contra critérios abaixo
-4. Se vago → fazer perguntas clarificadoras
-5. Se claro → prosseguir com workflow normal
+RECEBER prompt
+   ↓
+brain_search(prompt, top_k=3)
+   ↓
+score = contar E1..E6 afirmados
+   ↓
+score = 6/6 ?  NÃO → ROTA A        SIM → ROTA B
 ```
 
-## Critérios de Análise
+## Rota A — não entendi (score < 6)
 
-### Prompt COMPLETO (pode prosseguir)
+1. **PARAR.** Nenhuma **outra** skill, subagente ou artefato antes disso. Nada é criado.
+2. **Máximo 3 perguntas**, ordenadas por impacto no retrabalho: E1 > E2 > E3 > E4 > E5 > E6.
+3. **Proibido:** preencher lacuna com default, dizer "vou assumir que...", delegar com contexto parcial, emitir prompt otimizado.
+4. **Saída:** bloco de perguntas no [formato canônico da Rota A](references/clarifying-questions.md#formato-de-saida-da-rota-a) — nomeia o elemento bloqueante + o que já foi afirmado.
+5. **Repete a partir do score. Máximo 2 rodadas.** Se a 2ª não resolver, apresentar as 2 interpretações mais prováveis e pedir desempate (ver "Perguntas de Desempate" em [clarifying-questions.md](references/clarifying-questions.md)). Interrogatório infinito é falha, não diligence.
 
-| Critério | Obrigatório? | Exemplo |
-|----------|--------------|---------|
-| **Objetivo claro** | ✅ SIM | "Criar endpoint de login" |
-| **Contexto do módulo** | ✅ SIM | "No módulo identity" |
-| **Escopo definido** | ⚠️ RECOMENDADO | "Apenas backend, sem frontend" |
-| **Cenário de uso** | ⚠️ RECOMENDADO | "Para usuários que esqueceram a senha" |
-| **Restrições conhecidas** | ❌ OPCIONAL | "Sem mudar banco existente" |
+Variações de pergunta por elemento: [references/clarifying-questions.md](references/clarifying-questions.md).
 
-### Prompt VAGO (precisa perguntar)
+## Rota B — entendi (score = 6/6)
 
-| Sinal | Pergunta sugerida |
-|-------|-------------------|
-| "Melhorar o sistema" | "Qual parte especificamente? Backend, frontend, performance, segurança?" |
-| "Corrigir o bug" | "Qual bug? Qual tela/fluxo? Qual erro exato?" |
-| "Criar uma feature" | "O que essa feature faz? Quem usa? Qual fluxo?" |
-| "Refatorar isso" | "O que exatamente precisa refatorar? Por quê?" |
-| "Não tá funcionando" | "O que você tentou fazer? Qual erro apareceu?" |
-| "Faz igual o outro" | "Qual módulo/feature de referência? O que especificamente copiar?" |
+1. **Re-encoding:** emitir bloco PICCO estruturado com delimiter tags ([contrato](#contrato-de-saída-delimiter-tags)). O que entra no bloco é o que o usuário AFIRMOU, re-organizado — não interpretado, não enriquecido.
+2. **1 pergunta de confirmação** — "entendi X/Y/Z, sigo?". Sempre perguntar = nunca assumir. Não perguntar = nunca executar.
+3. **Sobre "sim"** → seguir o workflow SDD carregando o bloco re-encoded como contexto.
+4. **Sobre ajuste** → volta pra Rota A só com os elementos corrigidos.
+5. **O bloco é efêmero:** vai no prompt de delegação e no chat. Nunca em arquivo.
 
-## Template de Perguntas
+O mesmo bloco serve aos 3 destinos de consumo:
 
-```markdown
-## ❓ Preciso de mais contexto
+| Destino | Como entra |
+|---------|-----------|
+| Auto-uso do orquestrador | contexto do próprio turno, sem colar de volta |
+| Prompt de delegação | colado inteiro no prompt do subagente — o subagente não tem a conversa original |
+| Colável noutra tool | copy-paste do bloco; delimiters preservam a estrutura para qualquer parser |
 
-Para prosseguir corretamente, preciso esclarecer:
+## Contrato de Saída (delimiter tags)
 
-1. **{PERGUNTA_1}**
-2. **{PERGUNTA_2}**
-3. **{PERGUNTA_3}**
+```xml
+<role>[critério de comportamento + o que conta como defeito — nunca rótulo de persona]</role>
 
-### Contexto que já entendi:
-- {contexto_identificado}
+<task>Entregar [E1] em [E3].</task>
 
-### O que NÃO entendi:
-- {ambiguidades}
+<context>
+  Projeto: [projeto ativo]
+  Escopo: [o que entra e o que NÃO entra]
+  Tipo de rota: [E6]
+  Fornecido pelo usuário: [lista do que foi afirmado]
+</context>
 
-**Responda para que eu possa ajudar de forma precisa.**
+<constraints>
+  Sempre: [E4 como positivos — "sempre X", nunca negação pura]
+  Nunca: [violações do projeto que esta demanda arrisca]
+</constraints>
+
+<acceptance>
+  [E5 — como se verifica pronto]
+</acceptance>
+
+<open_questions>
+  <!-- Rota A: elementos ausentes. Rota B: vazio -->
+</open_questions>
 ```
 
-## Integração com Brain
+4 regras do contrato:
 
-### ANTES de analisar prompt
+1. **≤ 10 constraints.** Acima disso o bloco está mal — cortar. Adesão a instrução cai com o volume.
+2. **Role declara critério, não persona.** "Analisa o diff procurando vazamento de camada entre módulos" funciona — diz o que procurar e o que conta como defeito. "Você é um especialista em DDD" é rótulo: o modelo aprende o rótulo e nada mais. O template acima traz placeholder, não exemplo de persona — não copie rótulo para dentro da tag.
+3. **Constraints positivas primeiro.** "Sempre X" antes de "nunca Y". Negação pura é mais fácil de ignorar que afirmação.
+4. **Sem "pense passo a passo".** CoT explícito em prompt prejudica modelo de raciocínio. Não escrever, não sugerir.
+
+Exemplos completos (bons e ruins) + contagem de constraints: [references/picco-template.md](references/picco-template.md).
+
+## Rota de Conflito
+
+Dispara quando o pedido viola regra do projeto — Lombok, `@Disabled`, pular harness, `pkill -f`, editar código no orquestrador, pular code review. Não é ambiguidade, é conflito: não adianta perguntar para resolver.
+
+**Precedência:** a rota de conflito vence. Não é ambiguidade, é contradição — perguntar por elemento faltando não resolve violação de regra. Se o pedido for violador E incompleto: trate o conflito primeiro, retome a Rota A só para o que falta.
+
+1. **Nomeia a regra** com caminho: "isso viola `<arquivo>:<seção>`".
+2. **Oferece o caminho permitido mais próximo** que atende à mesma intenção.
+3. **Pergunta:** executo o caminho permitido, ou você quer abrir exceção explícita no portão?
+4. **Exceção →** registrada em `workflow-state.json.overrides`. Override não apaga a regra, deixa rastro.
+
+Perguntas prontas: [references/clarifying-questions.md](references/clarifying-questions.md#perguntas-de-conflito).
+
+## Exceção: Comandos de Consulta
+
+> **Pulam o gate.** Sem exceção, o portão vira taxação no dia a dia.
+
+- `show status`, `o que bloqueia X?`, `onde paramos?`, `onde está X?`, `o que Y faz?`, `existe Z?` (consulta factual ao repo — leitura, não mudança), leitura de `workflow-state.json` → **pula** brain_search, score, re-encoding e confirmação.
+- "add feature X", "move X before Y", "skip X" → **não pulam**: alteram estado, contam como demanda de mudança.
+
+Só demandas de **mudança** passam pelo gate. Consulta é leitura — responder já é a resposta.
+
+Override de 1 palavra ("já vai") também vale: o usuário respondendo curto é o sinal, não o número de elementos.
+
+## Anti-Patterns
+
+| ❌ Errado | ✅ Certo | Por quê |
+|-----------|-----------|---------|
+| Persona genérica sem critério: "Você é um especialista em DDD. Analise o sistema." | Critério no role: "Analisa o diff procurando vazamento de camada" | Rótulo não muda comportamento; critério muda |
+| Negação pura: "não use Lombok" como única constraint | Positivo primeiro: "sempre construtor explícito e getters manuais" | Negação é mais fácil de ignorar que afirmação |
+| Mega-prompt com 14+ constraints | Máximo 10; acima disso o bloco está mal | Acima de ~10 a adesão cai |
+| "pense passo a passo" / CoT explícito | Nenhuma instrução de raciocínio | CoT escrito prejudica modelo de raciocínio |
+| Prompt que se repete em 3 seções | Um bloco, 3 destinos de consumo | Repetição consome contexto sem adicionar |
+| Regra órfã: skill diverge do call site | Call site cita a skill e seu template | Call site desatualizado é o defeito; a skill é a fonte da verdade. Sincronizar o call site, nunca o contrário. |
+| "Vou assumir que você quer X" | "Você quer X ou Y?" | Default escolhido por você é palpite não marcado |
+| 3 rodadas de perguntas | Máximo 2 rodadas, depois desempate entre 2 interpretações | Interrogatório infinito é falha |
+
+## Brain
+
+**Antes** de|scorear:
 
 ```python
-# 1. Buscar contexto similar
-brain_search(query=prompt_usuario, top_k=3)
-
-# 2. Verificar se há lições sobre prompts vagos
-brain_search("prompt vago ambiguidade", layer="regras", scope="projetos", top_k=2)
-
-# 3. Se encontrar contexto relevante, usar como base
+brain_search(query=<prompt do usuário, literal>, top_k=3)
 ```
 
-### DEPOIS de refinar prompt
+A query é o prompt do usuário, não uma paráfrase — a paráfrase já é uma interpretação.
+
+**Depois**, quando um padrão se repetir:
 
 ```python
-# Salvar lição se pattern se repetir
+# Critério do 2x: 1 ocorrência é coincidência, 2 é padrão. Não poluir o Brain com evento único.
 brain_store(
     layer="regras",
-    path="atlas-ecm/prompt-patterns/<pattern>",
-    content="## Pattern: {pattern}\n\n### Pergunta que resolveu\n{pergunta}\n\n### Resposta do usuário\n{resposta}",
+    path="projeto/prompt-patterns/<elemento>-<padrao>",
+    content="## <título>\n\n### Lacuna\n[elemento ausente]\n### Pergunta que resolveu\n...\n### Resposta\n...",
     scope="projetos"
 )
 ```
 
-## Classificação de Prompts
+## Verificação
 
-### Tier 1: Crítico (PARAR imediatamente)
-
-Prompts que, se interpretados errados, geram retrabalho massivo.
-
-**Exemplos:**
-- "Mudar toda a arquitetura"
-- "Reescrever o módulo X"
-- "Deletar tudo e recomeçar"
-
-**Ação:** Perguntar 3-5 vezes antes de qualquer ação.
-
-### Tier 2: Ambíguo (PERGUNTAR antes de prosseguir)
-
-Prompts com múltiplas interpretações possíveis.
-
-**Exemplos:**
-- "Melhorar o login" (performance? UX? segurança?)
-- "Criar relatório" (que dados? que formato? que período?)
-- "Corrigir a validação" (onde? qual regra? qual erro?)
-
-**Ação:** Perguntar 1-3 vezes.
-
-### Tier 3: claro (PROSSEGUIR)
-
-Prompts com objetivo, contexto e escopo definidos.
-
-**Exemplos:**
-- "Adicionar campo 'phone' no DTO de response do módulo company"
-- "Criar endpoint GET /internal/users com paginação"
-- "Corrigir bug no login onde senha com caracteres especiais falha"
-
-**Ação:** Prosseguir com workflow normal.
-
-## Exemplo: Prompt Vago
-
-**Usuário:** "Melhorar o sistema"
-
-**Análise:**
-```
-Objetivo: ❌ NÃO definido ("melhorar" é vago)
-Módulo: ❌ NÃO especificado
-Escopo: ❌ NÃO definido
-Cenário: ❌ NÃO informado
-```
-
-**Resposta do agente:**
-```markdown
-## ❓ Preciso de mais contexto
-
-Para "melhorar o sistema", preciso entender:
-
-1. **Qual parte do sistema?** Backend, frontend, ambos?
-2. **Que tipo de melhoria?** Performance, UX, segurança, código?
-3. **Que módulo?** Identity, company, document, search?
-4. **Que problema você está enfrentando?** Algo específico está ruim?
-
-### Contexto que já tenho:
-- Projeto Atlas ECM (Java + Vue 3)
-- Módulos: identity, company, document, search
-
-### O que NÃO entendi:
-- "Melhorar" pode significar milhares de coisas
-- Sem escopo, posso gastar tokens à toa
-
-**Responda para que eu possa ajudar de forma precisa.**
-```
-
-## Exemplo: Prompt Claro
-
-**Usuário:** "Adicionar validação de email no endpoint POST /internal/registrations do módulo company"
-
-**Análise:**
-```
-Objetivo: ✅ Validação de email
-Módulo: ✅ Company
-Endpoint: ✅ POST /internal/registrations
-Escopo: ✅ Apenas validação
-```
-
-**Ação:** Prosseguir com workflow SDD.
-
-## Anti-Patterns
-
-| ❌ Errado | ✅ Certo |
-|-----------|----------|
-| Adivinhar e implementar | Perguntar e confirmar |
-| "Vou assumir que você quer X" | "Você quer X ou Y?" |
-| Delegar com contexto vago | Refinar prompt antes de delegar |
-| Pular brain_search | SEMPRE buscar contexto primeiro |
-
-## Métricas de Qualidade
-
-Após refinar prompt, verificar:
-
-- [ ] Objetivo definido? (O quê exatamente?)
-- [ ] Módulo/área definido? (Onde no sistema?)
-- [ ] Escopo definido? (Backend/frontend/ambos?)
-- [ ] Restrições conhecidas? (O que NÃO fazer?)
-- [ ] Critérios de aceite? (Como saber que está pronto?)
-
-Se qualquer ✅ obrigatório estiver faltando → PERGUNTAR.
+| # | Verificação | Critério |
+|---|-------------|----------|
+| **V1** | Prompt vago real ("melhorar o sistema") | Rota A, ≤3 perguntas, ZERO artefato criado |
+| **V2** | Prompt claro real | Rota B, bloco PICCO válido, 1 confirmação, depois avança |
+| **V3** | `grep -c "Tier 1|Tier 2|Tier 3"` nos 4 call sites (orchestrator/AGENT.md, sdd-orquestrador/AGENT.md, workflow-rules.md, harness-continuous.md) | 0 |
+| **V4** | `grep -c "prompt-optimizer" .agents/rules/harness-continuous.md` | >= 1 |
+| **V5** | Constraints por exemplo no picco-template.md | ≤ 10 em todos |
+| **V6** | `workflow-state.json` | JSON válido, `type: refactor` |

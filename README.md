@@ -8,22 +8,49 @@ Persiste conhecimento em `data/brain.db` (WAL, FTS5 porter, vetor BLOB 768), ind
 
 ---
 
+## Os dois públicos deste README
+
+Este arquivo serve a dois leitores com perguntas opostas. Escolha o seu e pule
+para a seção.
+
+| Você quer… | Vá para | Onde está a verdade |
+|-----------|---------|---------------------|
+| **USAR** o brain no seu projeto (`atlas-ecm`, `hive`, `progat-erp`) | [Quick start](#quick-start) · [Consumir de outro projeto](#consumir-de-outro-projeto) | `.agents/skills/brain/SKILL.md` (17 tools) e `.agents/rules/BRAIN.MCP.md` (regras) |
+| **DESENVOLVER** o brain | [Estrutura do repo](#estrutura-do-repo) · [Testes / harness](#testes--harness) | [`AGENTS.md`](AGENTS.md) (stack e comandos) e `.agents/rules/` (as regras, uma por assunto) |
+
+**Toda a documentação de desenvolvimento está em `.agents/`, não aqui.** Este
+README cobre instalar, rodar e operar. Ele não documenta a arquitetura interna,
+o harness, os limites de escrita ou o contrato das tools — e quando precisa
+fazê-lo, cita o arquivo em vez de repetir, para não haver duas versões do mesmo
+fato.
+
+Para um agente de outro projeto, o caminho é o bloco
+[Consumir de outro projeto](#consumir-de-outro-projeto): dois arquivos de
+instrução e o servidor SSE.
+
+---
+
 ## Índice
+
+**Para usar:**
+
+- [Quick start](#quick-start)
+- [Consumir de outro projeto](#consumir-de-outro-projeto)
+- [Cadastrar projeto](#cadastrar-projeto)
+- [Iniciar servidores](#iniciar-servidores)
+- [Configuração](#configuração)
+- [Viewer API](#viewer-api)
+- [Sessões compartilhadas (B2 MVP)](#sessões-compartilhadas-b2-mvp)
+- [Hooks lifecycle](#hooks-lifecycle)
+
+**Para desenvolver:**
 
 - [Visão geral (Rust)](#visão-geral-rust)
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
-- [Configuração](#configuração)
-- [Quick start](#quick-start)
-- [Cadastrar projeto](#cadastrar-projeto)
-- [Sessões compartilhadas (B2 MVP)](#sessões-compartilhadas-b2-mvp)
-- [Iniciar servidores](#iniciar-servidores)
-- [Consumir de outro projeto](#consumir-de-outro-projeto)
-- [Viewer API](#viewer-api)
-- [Hooks lifecycle](#hooks-lifecycle)
+- [Estrutura do repo](#estrutura-do-repo)
 - [Testes / harness](#testes--harness)
 - [Troubleshooting](#troubleshooting)
-- [Estrutura do repo](#estrutura-do-repo)
 
 ---
 
@@ -38,9 +65,9 @@ Persiste conhecimento em `data/brain.db` (WAL, FTS5 porter, vetor BLOB 768), ind
 | Busca | Híbrida FTS5 + vetor + entidade + grafo, fusão RRF k=60 + boost autoridade |
 | Testes | `cargo test --workspace` + `cargo clippy` |
 
-Crates em `crates/`: `brain-core` (tipos, validate/sanitize, chunk `##`, wikilink), `brain-store` (SQLite WAL, schema, RRF, TTL, audit), `brain-embed` (cliente Ollama), `brain-mcp` (tools rmcp + SSE), `brain-web` (viewer `/api/*`), `brain-cli` (CLI `brain`).
+Crates em `crates/`: `brain-core` (tipos, validate/sanitize, chunk `##`, wikilink), `brain-store` (SQLite WAL, schema, RRF, TTL, audit), `brain-embed` (cliente Ollama), `brain-mcp` (registro das 17 tools em `rmcp_service.rs` + SSE), `brain-web` (viewer `/api/*`), `brain-cli` (CLI `brain`).
 
-Versão atual: `0.8.0` (ver `workflow-state.json`).
+Versão atual: `0.9.1` (ver `workflow-state.json`).
 
 ---
 
@@ -80,16 +107,31 @@ brain --help
 
 ## Configuração
 
-Todas as variáveis usam prefixo `BRAIN_`:
+Todas as variáveis usam prefixo `BRAIN_`. Esta é a lista do **binário Rust** — as
+que o servidor e a CLI leem de fato:
 
 | Variável | Default | Descrição |
 |----------|---------|-----------|
 | `BRAIN_DB_PATH` | `./data/brain.db` | SQLite-only DB (WAL + FTS5) |
-| `BRAIN_OLLAMA_URL` | `http://localhost:11434` | URL do Ollama |
+| `BRAIN_OLLAMA_URL` | `http://localhost:11434` | URL do Ollama. Com ele fora, a busca degrada para FTS-only — **não dá erro** |
 | `BRAIN_OLLAMA_MODEL` | `nomic-embed-text` | Modelo de embedding (dim 768 fixa) |
-| `BRAIN_PORT` | `8321` | Porta MCP SSE (`serve-mcp`) |
-| `BRAIN_VIEWER_PORT` | `8322` | Porta web viewer (`serve`) |
-| `BRAIN_LOG_LEVEL` | `INFO` | Nível de log |
+| `BRAIN_PORT` | `8321` | Porta MCP SSE (`serve-mcp`, `server start`) |
+| `BRAIN_TRANSPORT` | — | `stdio` em vez de SSE |
+| `BRAIN_EXPORT_ROOT` | `/tmp/brain-export` | **Allowlist de escrita** de `brain export` e `brain backup` |
+| `BRAIN_EMBED_MAX_FAILURES` | `8` | Tentativas de embed antes do dead-letter |
+| `BRAIN_REUSE_SIMILARITY` | `1.0` | Abaixo de 1.0 um chunk pode herdar o vetor do texto antigo |
+| `BRAIN_EMBED_TIMEOUT_SECS` | `60` | Budget base por onda de embed |
+| `BRAIN_HOOK_EMBED` | `1` | `0` desliga o embed no `brain hook` |
+
+⚠️ **`BRAIN_VIEWER_PORT` e `BRAIN_LOG_LEVEL` não são lidas pelo binário Rust**,
+apesar de aparecerem no `CONFIGURE_MCP.md` e no `.env.example`: elas são lidas
+só pelo Python legado (`viewer/server.py`). No Rust a porta do viewer é a flag
+`--port` (default 8322, `brain-cli:98`) e não há nível de log configurável — o
+binário Rust não tem logger. A porta do MCP **é** `BRAIN_PORT`.
+
+`BRAIN_VAULT_PATH` foi **removida** do modelo e não é lida por nada; sobrou só o
+aviso no legado, que é o que ainda informa o operador de que a variável parou de
+fazer alguma coisa.
 
 Flag global (sobrescreve env por comando):
 
@@ -133,6 +175,14 @@ Sessão sem scope (camada `sessoes`):
 brain store sessoes meu-app/2026-09-17 "## Sessão: quick start OK"
 brain read sessoes meu-app/2026-09-17
 ```
+
+> **Uma escrita não espera por vetor.** `brain store` grava a nota e popula o
+> FTS5 na mesma transação e responde; os embeddings chegam em background. No
+> CLI eles são embedded inline, então a chamada já volta indexada — mas via MCP o
+> `brain_store` devolve `{"embedded": 0, "queued": N}` e `embedded: 0` **não é
+> bug**. Para o índice semântico, veja `brain status` →
+> `embedding.coverage.embedding_coverage_pct`. Detalhes em
+> `.agents/rules/BRAIN.MCP.md`.
 
 ---
 
@@ -271,7 +321,37 @@ brain setup opencode
 brain setup systemd
 ```
 
-`brain setup` alvos: `all|opencode|systemd|shell|project` (ver `brain setup --help`).
+`brain setup` alvos: `all|opencode|kiro|systemd|shell|project` (ver `brain setup --help`).
+
+`opencode` e `kiro` instalam o **hook de sessao** que liga a IDE ao brain: o
+opencode recebe um plugin em `~/.config/opencode/plugins/brain-session.js` e o kiro
+recebe `.kiro/hooks/brain-session.json`. `kiro` grava **dentro do projeto**; o resto
+configura a maquina.
+
+`all` **pergunta qual IDE usar** (`opencode` | `kiro`) e instala exatamente uma, mais
+`systemd` e `shell`. Em terminal nao-interativo assume `opencode` e avisa. `kiro` nao
+entra no `all` por padrao: escreveria artefatos de uma segunda IDE no diretorio em que
+o comando foi rodado.
+
+O `setup` tambem registra a **decisao de projeto** do diretorio atual em
+`config.json` (`BRAIN_DIR`, fallback `~/.brain`) — e essa decisao e o que faz
+`brain hook` saber em qual projeto gravar sem ninguem passar `--project`:
+
+```bash
+brain setup opencode --project hive     # grava, sem perguntar
+brain setup opencode --decline-project # grava "nao usar brain aqui"
+```
+
+| Flag | Efeito |
+|------|--------|
+| `--project <nome>` | grava o projeto do diretorio atual, sem perguntar |
+| `--decline-project` | grava a recusa (`motivo: "recusado"`), sem perguntar |
+| `--yes` | nao interativo: assume defaults, nao pergunta, nao grava projeto |
+| `--dry-run` | pergunta e mostra o que gravar, sem gravar nada |
+| `--force` | regrava artefatos que ja existem (o padrao e nao tocar) |
+
+`BRAIN_SETUP_NONINTERACTIVE=1` e o equivalente de `--yes` para quem nao pode passar
+flag. `systemd` e `shell` nao aceitam `--project`/`--decline-project` e dizem isso.
 
 Encerramento limpo:
 
@@ -318,9 +398,18 @@ No `opencode.json` do projeto consumidor:
 }
 ```
 
-- `SKILL.md` — como usar `brain_search` antes de codar e `brain_store` após decisões.
-- `BRAIN.MCP.md` — regras completas (camadas, scope, fluxo tarefa → busca → implementa → registra → resumo).
-- Skills por tool em `.agents/skills/brain/tools/` (`brain_search`, `brain_store`, `brain_read`, `brain_reindex`).
+- `SKILL.md` — as 17 tools, o contrato assíncrono do `brain_store`, e
+  `brain_status` como sinal de fila travada.
+- `BRAIN.MCP.md` — regras completas (camadas, scope, fluxo tarefa → busca →
+  implementa → registra → resumo). É o **mesmo contrato** que o `SKILL.md`: se
+  divergirem, é bug.
+- **Uma skill por tool** em `.agents/skills/brain/tools/` — 17 diretórios, um por
+  tool MCP, cada um com parâmetros, formato do retorno e "o que NÃO fazer". As 5
+  com efeito destrutivo ou escrita em disco (`brain_export`, `brain_backup`,
+  `brain_forget_sweep`, `brain_restore`, `brain_delete`) têm essa seção
+  obrigatória.
+- Subcomandos de **CLI** ficam em `.agents/skills/brain/cli/` (hoje
+  `brain_reindex`) — não são tools MCP e não estão no registro.
 
 Fluxo recomendado por tarefa: `brain_search` (contexto) → implementa → `brain_store` (decisões em `arquitetura`/`regras` com scope correto) → `brain_store` em `sessoes` (resumo).
 
@@ -390,7 +479,7 @@ cargo test --workspace
 cargo test -p brain-core -- --nocapture
 cargo test -p brain-store -- --nocapture
 cargo build --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings   # --all-targets: sem ele o clippy não vê tests/
 cargo llvm-cov --workspace --html   # cobertura ≥70%
 ```
 
@@ -405,7 +494,8 @@ cargo run -p brain-cli -- --db /tmp/phasec.db search "E2E" --top-k 5 --explain
 cargo run -p brain-cli -- --db /tmp/phasec.db read regras phasec/e2e --scope global
 cargo run -p brain-cli -- --db /tmp/phasec.db recent --top-k 5
 cargo run -p brain-cli -- --db /tmp/phasec.db export --to /tmp/brain-export --force
-cargo run -p brain-cli -- --db /tmp/phasec.db backup --to /tmp/phasec.bak
+# backup --to tem que ser ABSOLUTO, terminar em .bak e estar DENTRO da export root
+cargo run -p brain-cli -- --db /tmp/phasec.db backup --to /tmp/brain-export/phasec.bak
 cargo run -p brain-cli -- --db /tmp/phasec.db store regras phasec/ttl "## ttl" --scope global --expires-at 2000-01-01T00:00:00Z
 cargo run -p brain-cli -- --db /tmp/phasec.db forget-sweep --dry-run
 cargo run -p brain-cli -- --db /tmp/phasec.db status
@@ -433,12 +523,17 @@ Portão de conclusão (resumo): `cargo test` 0 falhas + `cargo build` 0 erros + 
 Diagnóstico rápido:
 
 ```bash
-brain status
+brain status                          # contagens + coverage + fila
 brain checkpoints --limit 5
 curl http://localhost:8322/api/status | jq .
 lsof -i :8321; lsof -i :8322
-BRAIN_LOG_LEVEL=DEBUG brain search "teste" --explain
+brain search "teste" --explain       # o --explain é do CLI; mostra os 4 streams do RRF
 ```
+
+> O binário Rust **não** tem nível de log por env var: `BRAIN_LOG_LEVEL` é lida
+> só pelo Python legado. Para o comportamento do embed, use os números de
+> `brain status` (`embedding.coverage` e `queue`), que são a superfície de
+> diagnóstico do Rust.
 
 ---
 
@@ -449,21 +544,36 @@ crates/
 ├── brain-core/src/lib.rs   → types (Note/Project/SearchResult), validate/sanitize, chunk ##, wikilink
 ├── brain-store/src/lib.rs  → Store SQLite WAL, FTS5 porter, vec BLOB cosine, RRF k=60, TTL, audit
 ├── brain-embed/src/lib.rs  → Ollama client (nomic-embed-text dim 768)
-├── brain-mcp/src/lib.rs    → rmcp tools + axum SSE (8321)
+├── brain-mcp/src/rmcp_service.rs → REGISTRO das 17 tools MCP + transporte SSE (8321)
+├── brain-mcp/src/lib.rs    → store_note_and_queue, fila de embedding, fs_guard, rotas REST de debug
 ├── brain-web/src/lib.rs    → axum viewer /api/* (8322)
-└── brain-cli/src/main.rs   → clap (ping/store/read/search/delete/recent/status/…/hook/setup/project)
+└── brain-cli/src/main.rs   → clap (ping/store/read/search/delete/r…/hook/setup/project/server)
 src/brain_server/           → legado Python (compat Fase C)
 data/brain.db               → SQLite-only (WAL) — verdade única
 viewer/index.html           → viewer estático
 .agents/
-├── skills/brain/SKILL.md   → skill /brain para outros repos
-└── rules/BRAIN.MCP.md      → regras de consumo
+├── skills/brain/SKILL.md   → skill /brain para outros repos: as 17 tools, o contrato
+│                             assíncrono e as env vars
+├── skills/brain/tools/     → 1 skill por tool MCP (17), com "o que NÃO fazer" nas destrutivas
+├── skills/brain/cli/       → subcomandos de CLI (brain_reindex) — não são tools MCP
+├── rules/BRAIN.MCP.md      → mesmo contrato, para o agente consumidor
+└── rules/                  → regras de desenvolvimento, uma por assunto (harness, arquitetura,
+                              banco, backend, frontend, segurança, SDD, workflow)
 hooks/                      → hooks lifecycle + steering/instructions
 .spec/                      → SPEC/PLAN/TASKS por feature
 workflow-state.json         → estado SDD (versão, fase, testes)
 AGENTS.md                   → fonte da verdade (stack, comandos, tools MCP)
 ```
 
-Referência completa de comandos: `AGENTS.md`. Estado do workflow: `workflow-state.json`. Harness: `.agents/rules/harness-continuous.md`.
+### Onde está a documentação
+
+| Pergunta | Arquivo |
+|----------|---------|
+| Como uso isso no meu projeto? | `.agents/rules/BRAIN.MCP.md` |
+| O que cada tool faz e devolve? | `.agents/skills/brain/tools/<tool>/SKILL.md` |
+| Quero que meu agente USE o brain | `.agents/skills/brain/SKILL.md` |
+| Como o brain é construído e testado? | `AGENTS.md` + `.agents/rules/` |
+| O que o portão de conclusão exige? | `.agents/rules/harness-continuous.md` |
+| Referência de comandos | `AGENTS.md` |
 
 > Projeto desenvolvido com **spec-driven-development** — ver `.spec/` para requirements, design e tasks.
