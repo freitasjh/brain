@@ -6,7 +6,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 use std::io::Write;
 use std::path::PathBuf;
 
+mod config;
 mod legacy_import;
+mod resolve;
 mod setup;
 
 /// US-01.1 AC1. The SSE port: `--port` when given, else `BRAIN_PORT`, else 8321.
@@ -382,7 +384,26 @@ mesmos de serve-mcp; o shutdown é o mesmo nos três: SIGINT ou SIGTERM, para qu
     /// Inicia só o visualizador web somente-leitura
     Serve { #[arg(long, default_value_t=8322)] port: u16 },
     /// Registra um evento do agente na sessão
-    Hook { #[arg(long, value_parser=["session-start","tool-result","session-end"])] event: String, #[arg(long)] project: String, #[arg(long)] payload: Option<String> },
+    Hook {
+        #[arg(long, value_parser=["session-start","tool-result","session-end"])]
+        event: String,
+        /// Projeto. Ausente: resolvido pela cascata (config.json -> remote git ->
+        /// nome do diretório -> pergunta). Presente: usado como está.
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        payload: Option<String>,
+        /// A pergunta que o usuario esta fazendo agora (RF-04). Vira a query da injecao
+        /// de contexto do `session-start`.
+        ///
+        /// **Um argumento proprio, e nao uma chave dentro do `--payload`.** O payload e
+        /// JSON dentro de uma string de shell, entao a pergunta teria de ser escapada
+        /// duas vezes — e uma aspa na pergunta quebraria o JSON. Aqui a pergunta viaja
+        /// como `argv`, onde as aspas nao tem significado nenhum. Ausente: a chave
+        /// `question` do payload e usada, e sem as duas a injecao degrada (T4.3).
+        #[arg(long)]
+        question: Option<String>,
+    },
 
     // ---- Projetos e setup -------------------------------------------------------
     /// Gerencia projetos e vínculos de notas
@@ -693,7 +714,188 @@ fn fit_section(section: &str) -> String {
     "[truncated by the brain hook: this event exceeded the note size limit]\n".to_string()
 }
 
-async fn hook_handle(event: String, project: String, payload: Option<String>, db: String) -> Result<()> {
+/// The `origin` remote's URL, or `None` when git cannot answer.
+///
+/// Every failure is `None`, deliberately, and none of them is an error: git absent,
+/// not a repository, no remote, a detached worktree. The cascade treats them all the
+/// same — step 2 simply
+/// does not fire — because the alternative is failing a hook that an IDE calls on
+/// every event, over a step that has three more fallbacks behind it.
+///
+/// `stdin` is null so git can never stop to ask for a credential (RF-07.3). There is
+/// **no timeout** here, and the risk is accepted rather than mitigated: this reads
+/// `.git/config` through plumbing that does no network and takes no index lock, so the
+/// work is bounded by a local file read. A deadline would mean a watchdog thread
+/// around a call that is not slow — more machinery than the hazard earns.
+fn git_origin_remote(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("remote")
+        .arg("get-url")
+        .arg("origin")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.is_empty() { None } else { Some(url) }
+}
+
+/// The hook's prompt: it does not ask, and says why.
+///
+/// **The question moved out of the hook (RF-07.3).** An IDE does not hand a hook a
+/// terminal, so the `is_terminal` branch was nearly dead code, and the `read_line` in
+/// the live branch was **unbounded** — a hook that blocks is worse for the IDE than one
+/// that skips a step, and nothing inside the hook can bound somebody else's read.
+///
+/// So the answer is always `CannotAsk`, which is not a degraded prompt but the accurate
+/// one: nobody is present. `brain setup` asks the operator interactively in P5 and
+/// records the answer, after which this function is never reached. The trait stays, so
+/// P5 has somewhere to plug the real question in.
+struct HookPrompt;
+
+impl resolve::Prompt for HookPrompt {
+    fn ask(&self, _candidates: &[String]) -> resolve::Answer {
+        eprintln!(
+            "hook: there is nobody to ask which project this is, so nothing was written and \
+             nothing was recorded. Run `brain setup` to answer once for this directory."
+        );
+        resolve::Answer::CannotAsk
+    }
+}
+
+/// Resolve the project for a hook run: explicit `--project` wins, else the cascade.
+///
+/// Degrades rather than fails (RF-07). Two things that used to be fatal are warnings:
+/// a `BRAIN_DIR` that cannot be created or written (RF-07.1) and a database that
+/// cannot be opened. The hook runs on every event, inside something the operator is
+/// trying to work in, so an environment problem must never become a non-zero exit.
+///
+/// The return is a plain `Resolution`, not `Result<Option<…>>`. It used to be wrapped
+/// in both, with a doc promising a `None` for `disabled` that never arrived and an
+/// `.expect` at the call site whose stated reason ("unless disabled") was the very
+/// thing that was untrue — a panic in a hook, the worst of RF-07's failure modes.
+fn resolve_hook_project(
+    db: &str,
+    explicit: Option<&str>,
+    dir: &std::path::Path,
+) -> resolve::Resolution {
+    if let Some(name) = explicit {
+        return resolve::Resolution {
+            project: Some(name.to_string()),
+            origin: resolve::Origin::Explicit,
+        };
+    }
+
+    // The registered names come from the database, so the cascade's steps 2 and 3
+    // can only resolve to something the brain actually knows. A store that cannot be
+    // opened is not fatal: the cascade still has step 1 and step 4.
+    let known: Vec<String> = match Store::open(db) {
+        Ok(store) => store
+            .project_list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
+        Err(e) => {
+            eprintln!("hook: project list unavailable ({e}); the cascade will run with no candidates");
+            Vec::new()
+        }
+    };
+
+    let record = |dir: &std::path::Path, entry: &config::Entry| config::save_entry(dir, entry);
+    // RF-07.1: no usable `BRAIN_DIR` is a degraded run, not a failed one. The cascade
+    // loses step 1 and the ability to record; it keeps the remote and the directory
+    // name.
+    let config_dir = match config::brain_dir() {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!("hook: {e}; running without config.json, so nothing will be recorded");
+            None
+        }
+    };
+    resolve::resolve(
+        dir,
+        &resolve::Env {
+            known: &known,
+            git_remote: git_origin_remote(dir),
+            prompt: &HookPrompt,
+            record: &record,
+            config_dir: config_dir.as_deref(),
+        },
+    )
+}
+
+/// The query to inject context with, and whether the caller had to degrade.
+///
+/// **This is a change of decision from `PLAN.md` §2, and it is a measured one.** The
+/// plan says an empty question "cai no texto fixo antigo". Measured against a corpus
+/// that actually has project rules, the old fixed text returns **zero** results:
+///
+/// ```text
+/// search("padroes melhores praticas licoes", layer=regras, scope=global)  ->  total = 0
+/// search("padroes melhores praticas licoes", layer=regras, project=hive) ->  total = 0
+/// ```
+///
+/// against a note whose text is "Always run the full test suite before commit". So the
+/// planned fallback is a four-stream RRF round trip whose result is guaranteed empty, and
+/// keeping it would preserve nothing while keeping the lie that produced it.
+///
+/// The empty query is the better fallback for three reasons, in order of weight:
+///
+/// 1. **A fixed string that matches is worse than nothing.** When those three words do
+///    occur, the old code printed the notes it found under a header that implies they
+///    answer the session. They answer a question nobody asked. An empty query prints
+///    `INJECT: (no context found)`, which is true.
+/// 2. It is free. `Store::search` has no FTS, vector, entity or graph stream without a
+///    query, so `all_paths` comes back empty and it returns at `lib.rs:1906` — one early
+///    return instead of four scans. The fixed text would pay for all four.
+/// 3. It keeps the degraded path honest for the caller, which is what `eprintln!` on the
+///    other side of the hook reports upward.
+///
+/// So: the question when there is one, nothing when there is not, and the IDE is told
+/// which of the two happened.
+///
+/// **The second measured decision: terms are joined with `OR`, not `AND`.** This one is
+/// not in the plan and it is the difference between the feature working and not working.
+/// Measured on a corpus that has the note the question is about:
+///
+/// ```text
+/// search("kebab-case nos caminhos", project=hive)  ->  total = 0
+/// search("kebab" OR "case" OR "nos" OR "caminhos") ->  total = 1  regras/projetos/hive/naming
+/// ```
+///
+/// A natural-language question is a **retrieval** query, not a filter. Strict AND requires
+/// *every* term to be present, and a six-word question almost never has all of its words
+/// in the one relevant note — so AND answers "nothing", which is what the fixed query it
+/// replaces also did, for a different reason. Recall is the right bias here: the RRF
+/// fusion and FTS5's own ranking still put the best match first, and the project filter
+/// (not the conjunction) is what keeps the result set small.
+///
+/// `Store::search` keeps FTS5's default conjunction. This looser one is scoped to the
+/// inject, because `Store::search` also backs the MCP `brain_search` tool, where the
+/// caller asked for a search and expects the precision that implies.
+fn inject_query(question: &str) -> (String, bool) {
+    let q = question.trim();
+    if q.is_empty() {
+        (String::new(), true)
+    } else {
+        let joined = brain_store::fts5_match_expr_joined(q, "OR");
+        // A question of only FTS operators/stripped punctuation joins to nothing:
+        // searching it would run four streams for a guaranteed empty result, so
+        // degrade like the empty question instead of reporting healthy.
+        if joined.trim().is_empty() {
+            (String::new(), true)
+        } else {
+            (joined, false)
+        }
+    }
+}
+
+async fn hook_handle(event: String, project: Option<String>, payload: Option<String>, question: Option<String>, db: String) -> Result<()> {
     use chrono::Utc;
     use fs2::FileExt;
     use std::fs::OpenOptions;
@@ -703,14 +905,98 @@ async fn hook_handle(event: String, project: String, payload: Option<String>, db
     if !["session-start", "tool-result", "session-end"].contains(&event.as_str()) {
         anyhow::bail!("invalid event '{}': expected session-start|tool-result|session-end", event);
     }
-    if project.trim().is_empty() {
-        anyhow::bail!("project required: pass --project <name>");
+
+    // RF-02/RF-03: an explicit `--project` short-circuits the cascade; without one
+    // the directory is resolved. The working directory is the hook's cwd, which is
+    // where the IDE launched it.
+    let cwd = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("hook: the current directory is unreadable — {e}"))?;
+    if !cwd.is_dir() {
+        anyhow::bail!("hook: {} is not a directory", cwd.display());
     }
-    // The project name becomes a path component. It arrived unsanitised, so
+    let resolution = resolve_hook_project(&db, project.as_deref(), &cwd);
+
+    // "Do not use this here" — all three of its shapes, and the difference between
+    // them is not cosmetic. `desabilitado` and `recusado` are answers a human gave
+    // and are final; `unresolved` is the *absence* of an answer, and it writes no
+    // note either but records nothing, so the directory is still asked the next time
+    // a human is present. See `Origin::skip_reason` for the table.
+    //
+    // Measured before this gate existed: a recorded refusal produced
+    // `hook ok … note=sessoes/<dirname>/<date>` — declining a question had silently
+    // created a session note under a project the operator never chose, which is not
+    // what "mark as not used" means.
+    if let Some(why) = resolution.origin.skip_reason() {
+        outln!("hook skipped event={} origin={} dir={}", event, resolution.origin, cwd.display());
+        eprintln!("hook: {} {why}, so nothing was written", cwd.display());
+        return Ok(());
+    }
+
+    // The origin is on its own line so that R-06 still holds: with an explicit
+    // `--project` the `hook ok …` line below is byte-for-byte what it always was.
+    let origin_line = format!(
+        "hook resolve project={} origin={}",
+        resolution.project.as_deref().unwrap_or("(none)"),
+        resolution.origin
+    );
+    outln!("{origin_line}");
+
+    // Every origin that reaches here has a project, so the note path always has one
+    // component to attribute the event to.
+    //
+    // There used to be a fallback here — the directory's own name, for a resolution
+    // with no project. It is gone, and that is the point of the change above: it is
+    // what turned a refusal into a note. A *new* origin that arrives without a project
+    // must make a deliberate choice, so this is a distinct branch with its own
+    // message rather than a silent substitution. It skips rather than bails, because a
+    // hook that exits non-zero breaks the IDE that called it (RF-07) — and that is
+    // exactly the kind of mistake that should be loud in the log rather than fatal.
+    let resolved_project = match resolution.project.clone() {
+        Some(p) => p,
+        None => {
+            outln!("hook skipped event={} origin={} dir={}", event, resolution.origin, cwd.display());
+            eprintln!(
+                "hook: {} resolved to origin={} with no project, which no origin is \
+                 supposed to do; nothing was written. Add the new origin to \
+                 `Origin::skip_reason` or give it a project.",
+                cwd.display(),
+                resolution.origin
+            );
+            return Ok(());
+        }
+    };
+    let project = resolved_project;
+    // The project name becomes part of the note path, and it arrived unsanitised, so
     // `--project ../../etc` used to produce the note path `sessoes/../../etc/<date>`
-    // — a namespace escape that also makes `brain_export` write outside its
-    // directory. One component, no separators, no climb.
-    let project = sanitize_relative_path(&project)?;
+    // — a namespace escape that also makes `brain_export` write outside its directory.
+    //
+    // What `sanitize_relative_path` guarantees is **containment**, not a single
+    // component: it refuses an absolute path and any `..` component, and allows
+    // nesting (`a/b` is a legal relative path). The comment here used to claim "one
+    // component, no separators", which was never true of the guard — restating it
+    // would have been a claim in the source that no test could support.
+    //
+    // The name can now also come from a directory, and that input is safe by
+    // construction rather than by this check: a real directory's `file_name()` cannot
+    // contain `/` or be `..`, because the filesystem forbids both. It still goes
+    // through the sanitiser so there is exactly one place where a name becomes a path.
+    // Degrade, do not fail. RF-07: a hook that exits non-zero breaks the IDE that
+    // called it, and the cause here — a project name that cannot be a path component —
+    // is the operator's own earlier input, not a fault of the moment. A file that
+    // carries such a name (hand-edited, or written by a build older than the check in
+    // `config::save_entry_in`) must not turn every event from here on into an error.
+    let project = match sanitize_relative_path(&project) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "hook: {e}\n\
+                 This directory's recorded project cannot be used as a path component, so \
+                 nothing was written. Fix it with `brain setup --project <name>` in this \
+                 directory, or remove the entry from config.json."
+            );
+            return Ok(());
+        }
+    };
     let now = Utc::now().to_rfc3339();
     let date = Utc::now().format("%Y-%m-%d").to_string();
     let payload_raw = payload.clone().unwrap_or_else(|| "{}".into());
@@ -875,15 +1161,48 @@ async fn hook_handle(event: String, project: String, payload: Option<String>, db
         );
     }
 
-    // session-start inject: brain_search scope global para inject
+    // session-start inject: the user's own question, filtered by project.
     if event == "session-start" {
         let store = Store::open(&db)?;
-        let res_global = store.search("padrões melhores práticas lições", None, Some("regras"), Some("global"), None, None, 3, false).unwrap_or_default();
+        // RF-04. The query is what the user actually asked, taken from the payload. It
+        // used to be the fixed string `"padroes melhores praticas licoes"`, which meant
+        // the mechanism worked and was useless: it could not know what anyone asked.
+        // The flag wins over the payload key, and the payload key is kept as a fallback
+        // so a caller that already embeds a question does not have to know about the
+        // flag. A caller passing both has a bug, and silently preferring one of them
+        // would hide it — so they are compared, not merged.
+        let from_flag = question.as_deref().map(str::trim).filter(|q| !q.is_empty());
+        let from_payload = payload_val.get("question").and_then(|v| v.as_str()).map(str::trim).filter(|q| !q.is_empty());
+        if from_flag.is_some() && from_payload.is_some() && from_flag != from_payload {
+            eprintln!(
+                "hook: --question and the payload's `question` disagree; using --question. \
+                 Pass only one."
+            );
+        }
+        let question = from_flag.or(from_payload).unwrap_or("");
+        // T4.3, and a change of decision from the plan. The plan said "falls back to the
+        // old fixed text"; see `inject_query` for why a fixed string is the wrong thing
+        // to fall back to.
+        let (query, degraded) = inject_query(question);
+        debug_assert!(!degraded || query.trim().is_empty());
+        if degraded {
+            eprintln!("hook: no question in the payload; injecting by project only (no fixed query)");
+        }
+        // The project is a **filter**, not a term. It used to be spliced into the query
+        // as `format!("regras {}", project)`, which is the opposite of a filter: it made
+        // a note match only if its *text* happened to contain the project's name, and it
+        // searched `scope = 'projetos'` — so a project note stored with
+        // `scope = "global"` was unreachable from its own project.
+        //
+        // `Store::search` has taken `project=` all along, and the filter is applied over
+        // owned **and** linked paths after the RRF merge, so it filters every stream at
+        // once instead of biasing one of them.
+        let res_global = store.search(&query, None, Some("regras"), Some("global"), None, None, 3, false).unwrap_or_default();
         if !res_global.is_empty() {
             outln!("--- Brain context (global) ---");
             for r in &res_global { outln!("{} [{}] {}", r.path, r.score, r.snippet.chars().take(120).collect::<String>()); }
         }
-        let res_proj = store.search(&format!("regras {}", project), None, Some("regras"), Some("projetos"), None, None, 3, false).unwrap_or_default();
+        let res_proj = store.search(&query, None, Some("regras"), Some("projetos"), Some(&project), None, 3, false).unwrap_or_default();
         if !res_proj.is_empty() {
             outln!("--- Brain context (projetos) ---");
             for r in &res_proj { outln!("{} [{}] {}", r.path, r.score, r.snippet.chars().take(120).collect::<String>()); }
@@ -892,6 +1211,9 @@ async fn hook_handle(event: String, project: String, payload: Option<String>, db
             outln!("INJECT: (no context found)");
         }
     }
+    // R-06: with an explicit `--project` this line is byte-for-byte what it always
+    // was. The resolution origin is printed separately, above, precisely so that it
+    // is not.
     outln!("hook ok event={} project={} note={} spool={}", event, project, full, spool.display());
     Ok(())
 }
@@ -1141,8 +1463,8 @@ async fn main() -> Result<()> {
                 brain_mcp::rmcp_service::serve_rmcp_sse(db.clone(), port).await?;
             }
         }
-        Cmd::Hook { event, project, payload } => {
-            hook_handle(event, project, payload, db).await?;
+        Cmd::Hook { event, project, payload, question } => {
+            hook_handle(event, project, payload, question, db).await?;
         }
         Cmd::Setup { target, mcp_port, viewer_port, brain_dir, dir, force, dry_run } => {
             setup::run_setup(&setup::SetupOpts { target, mcp_port, viewer_port, db: db.clone(), brain_dir, dir, force, dry_run })?;
@@ -1402,5 +1724,22 @@ mod tests {
             description.contains("[env: BRAIN_OLLAMA_URL=/home/u/data/brain.db]"),
             "a credential-free value must reach the page unchanged: {description}"
         );
+    }
+
+    /// Yellow Batch2: a question of only FTS operators degrades like an empty
+    /// one — the joined query is empty, so a healthy flag would lie to the
+    /// caller about running four streams for a guaranteed empty result.
+    #[test]
+    fn an_operators_only_question_degrades_like_an_empty_one() {
+        for q in ["", "   ", "OR", "and", "OR AND NOT", "or and not", "\"():{}=-/"] {
+            let (query, degraded) = inject_query(q);
+            assert!(query.is_empty(), "query for {q:?} must be empty, got {query:?}");
+            assert!(degraded, "query for {q:?} must report degraded");
+        }
+        let (query, degraded) = inject_query("kebab-case nos caminhos");
+        assert!(!query.is_empty() && !degraded, "a real question stays healthy: {query:?}");
+        let (query, degraded) = inject_query("a OR b");
+        assert_eq!(query, "a OR b");
+        assert!(!degraded);
     }
 }

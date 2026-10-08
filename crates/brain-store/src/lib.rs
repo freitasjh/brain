@@ -54,6 +54,44 @@ fn like_escaped(prefix: &str) -> String {
         .collect()
 }
 
+/// Build an FTS5 `MATCH` expression with the default (AND) conjunction.
+///
+/// Byte-identical in behaviour to the inline sanitisation in `Store::search` at
+/// HEAD d5f8939: replace FTS5 specials with space, trim. Space-separated terms
+/// are implicit AND in FTS5. No separator/quoting overhaul — that stays a
+/// future decision.
+pub fn fts5_match_expr(q: &str) -> String {
+    q.replace(|c: char| "*\"():{}=-/\\".contains(c), " ")
+        .trim()
+        .to_string()
+}
+
+/// Same sanitisation as [`fts5_match_expr`], but terms joined with `conj`.
+///
+/// Only `"OR"` (case-insensitive) changes the output: terms joined with
+/// `" OR "`. Any other `conj` returns the default AND form verbatim, so
+/// existing callers keep HEAD behaviour.
+///
+/// A bare `OR`/`AND`/`NOT` token from the user is dropped before the join:
+/// otherwise `"a OR b"` becomes `"a OR OR OR b"`, a second operator with no
+/// operand that FTS5 rejects. The match is case-insensitive because FTS5
+/// operators are.
+pub fn fts5_match_expr_joined(q: &str, conj: &str) -> String {
+    let base = fts5_match_expr(q);
+    if conj.eq_ignore_ascii_case("OR") {
+        base.split_whitespace()
+            .filter(|t| {
+                !t.eq_ignore_ascii_case("OR")
+                    && !t.eq_ignore_ascii_case("AND")
+                    && !t.eq_ignore_ascii_case("NOT")
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    } else {
+        base
+    }
+}
+
 /// What [`Store::note_append_section`] did.
 #[derive(Debug, Clone)]
 pub struct Appended {
@@ -1669,8 +1707,7 @@ impl Store {
         let mut fts_rank: HashMap<String, usize> = HashMap::new();
         if !missing_project && !query.trim().is_empty() {
             // A1: escape FTS5 specials + SQL ops to prevent syntax error / injection
-            let sanitized = query.replace(|c: char| "*\"():{}=-/\\".contains(c), " ");
-            let sanitized = sanitized.trim().to_string();
+            let sanitized = fts5_match_expr(query);
             if !sanitized.is_empty() {
                 match self.fts_candidates(&sanitized, project_id_filter) {
                     Ok(mut ranked) => {
@@ -2365,6 +2402,27 @@ mod tests {
         // insert chunks for FTS recall (chunks not needed for FTS, but search uses notes_fts)
         let res = s.search("xyz123", None, None, None, None, None, 5, false).unwrap();
         assert!(res.iter().any(|r| r.path.contains("alpha")), "fts should find alpha, got {:?}", res.iter().map(|r| &r.path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_fts5_match_expr_joined_or_differs_from_and() {
+        let q = "kebab-case nos caminhos";
+        let and_default = fts5_match_expr(q);
+        let and_joined = fts5_match_expr_joined(q, "AND");
+        let or_joined = fts5_match_expr_joined(q, "OR");
+        // Default AND preserved: joined AND == plain expr (HEAD byte-identical).
+        assert_eq!(and_joined, and_default);
+        // OR differs: terms joined with OR vs implicit AND (spaces).
+        assert_ne!(or_joined, and_default);
+        assert!(or_joined.contains(" OR "));
+        assert!(!and_default.contains(" OR "));
+        // Same sanitisation: FTS5 specials stripped in both.
+        let tricky = "a:b (c)";
+        assert!(!fts5_match_expr(tricky).contains([':', '(', ')']));
+        assert!(!fts5_match_expr_joined(tricky, "OR").contains([':', '(', ')']));
+        // A user-typed operator must not double: "a OR b" joins to one OR, not three.
+        assert_eq!(fts5_match_expr_joined("a OR b", "OR"), "a OR b");
+        assert_eq!(fts5_match_expr_joined("a or AND not b", "OR"), "a OR b");
     }
 
     #[test]
