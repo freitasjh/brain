@@ -256,15 +256,16 @@ fn setup_kiro_writes_the_kiro_hook_artifact() {
     assert!(v.get("name").is_none(), "the top-level `name` is not in the file schema: {raw}");
 }
 
-/// The 11 triggers in `kiro.dev/docs/hooks/types`.
+/// The 11 triggers: two confirmed on a real kiro (`UserPromptSubmit`, `Stop`),
+/// the rest as documented in `kiro.dev/docs/hooks/types`.
 ///
 /// Duplicated here, in the test crate, on purpose: a test that read the list out of the
 /// binary would agree with whatever the binary has — including a wrong one. This one
 /// states the expected set independently, so removing a trigger from the crate's copy
 /// fails here instead of passing because both sides moved together.
 const KIRO_TRIGGERS: &[&str] = &[
-    "PromptSubmit",
-    "AgentStop",
+    "UserPromptSubmit",
+    "Stop",
     "SessionStart",
     "AgentSpawn",
     "PreToolUse",
@@ -276,26 +277,25 @@ const KIRO_TRIGGERS: &[&str] = &[
     "PostTaskExecution",
 ];
 
-/// The generated artifact must use `SessionStart` and `AgentStop`.
+/// The generated artifact must use `UserPromptSubmit` and `Stop`.
 ///
-/// `AgentStop` and not a `SessionEnd`: the latter is not a trigger at all, and the
-/// former is the one documented as firing on **IDE and CLI** — which is what makes it
-/// usable for an artifact meant to work on both. `SessionStart` is IDE-only, and the
-/// brain is only ever consulted from an IDE session, so it is kept.
+/// `Stop` and not a `SessionEnd`: the latter is not a trigger at all, and the former
+/// is the end-of-turn name confirmed on a real kiro. No IDE-vs-CLI coverage claim:
+/// the old comment asserted one from the docs alone, never fired in runtime.
 #[test]
-fn the_generated_artifact_uses_prompt_submit_and_agent_stop() {
+fn the_generated_artifact_uses_user_prompt_submit_and_stop() {
     let w = World::new("triggers");
     let o = w.setup(&["kiro", "--yes"]);
     assert!(o.status.success(), "{}", out(&o));
     let raw = std::fs::read_to_string(w.proj().join(".kiro/hooks/brain-session.json"))
         .expect("the artifact");
-    // **P4 changed the trigger, deliberately.** `SessionStart` became `PromptSubmit`,
+    // **P4 changed the trigger, deliberately.** `SessionStart` became `UserPromptSubmit`,
     // because a session start is the one moment where the user has not typed anything
-    // yet — the question this hook exists to inject does not exist. `PromptSubmit` is
+    // yet — the question this hook exists to inject does not exist. `UserPromptSubmit` is
     // where kiro documents the prompt as `USER_PROMPT`, so that is the only trigger
-    // whose firing can carry one. `AgentStop` is unchanged.
-    assert!(raw.contains("\"PromptSubmit\""), "got:\n{raw}");
-    assert!(raw.contains("\"AgentStop\""), "got:\n{raw}");
+    // whose firing can carry one. `Stop` is unchanged.
+    assert!(raw.contains("\"UserPromptSubmit\""), "got:\n{raw}");
+    assert!(raw.contains("\"Stop\""), "got:\n{raw}");
     for gone in ["session.start", "session.end", "SessionEnd", "\"SessionStart\""] {
         assert!(!raw.contains(gone), "`{gone}` must not be the trigger any more: {raw}");
     }
@@ -1280,7 +1280,7 @@ fn p4_corpus(w: &World) {
     store("regras", "coding", "## Global\n\nRun the whole suite before commit.", "global", None);
 }
 
-/// Run the generated command with `USER_PROMPT` set, as kiro would for `PromptSubmit`.
+/// Run the generated command with `USER_PROMPT` set, as kiro would for `UserPromptSubmit`.
 fn p4_run_kiro(w: &World, dir: &Path, command: &str, prompt: Option<&str>) -> String {
     let mut c = Command::new("sh");
     c.arg("-c").arg(command).current_dir(dir)

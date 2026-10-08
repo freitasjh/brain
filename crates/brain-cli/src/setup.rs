@@ -893,18 +893,21 @@ fn ask_ide(asker: &dyn Asker) -> String {
 
 const IDE_CHOICES: &[&str] = &["opencode", "kiro"];
 
-/// The kiro triggers this binary knows exist, as documented in
-/// `kiro.dev/docs/hooks/types`.
+/// The kiro triggers this binary knows exist: two confirmed against a real kiro
+/// runtime (`UserPromptSubmit`, `Stop`), the rest as documented in
+/// `kiro.dev/docs/hooks/types` and **not** runtime-validated.
 ///
 /// **A closed list on purpose.** The earlier version of this file used dotted names
 /// (`session.start`) that look plausible and are not in the table — so a kiro reading
 /// it had nothing to match, and nothing failed either, because an unknown trigger is
 /// not a syntax error. Asserting membership in a closed list turns "the doc changed"
 /// or "I typed a name from memory" into a test failure instead of a hook that silently
-/// never fires.
+/// never fires. `PromptSubmit`/`AgentStop` are the reason this paragraph exists a
+/// second time: they were doc-sourced names, never fired by a real kiro, and the
+/// guard below passed them because the list said they were real.
 const KIRO_TRIGGERS: &[&str] = &[
-    "PromptSubmit",
-    "AgentStop",
+    "UserPromptSubmit",
+    "Stop",
     "SessionStart",
     "AgentSpawn",
     "PreToolUse",
@@ -930,18 +933,18 @@ const KIRO_TRIGGERS: &[&str] = &[
 ///   accepts this exact document, and where it looks for it, is P6's job.
 /// - `matcher` is omitted. It is optional and we have nothing to match on — both
 ///   triggers fire for every event.
-/// - The choice of triggers is ours, and it is a judgement: `SessionStart` is
-///   **IDE-only**, so a kiro CLI session would never fire it, while `AgentStop` is
-///   **IDE and CLI**. Since the artifact is meant to work on both, the end-of-turn
-///   event is `AgentStop` even though the name sounds less like a session boundary.
-///   The injection at start is therefore left to `SessionStart` and accepted as
-///   IDE-only, which is where the brain is actually consulted.
+/// - The choice of triggers is ours, and it is a judgement with one confirmed leg:
+///   `UserPromptSubmit` and `Stop` were observed firing on a real kiro; every other
+///   name in `KIRO_TRIGGERS` is still doc-sourced. In particular no IDE-vs-CLI
+///   coverage claim is made here — the earlier comment asserted `SessionStart` was
+///   IDE-only and `AgentStop` was IDE-and-CLI from the docs alone, and that is
+///   exactly the class of guess this correction removes.
 ///
 /// Two things this file deliberately does **not** do yet, both noted here because the
 /// next phase will want them and neither is a surprise:
 ///
 /// - **The user's actual question.** The kiro hook STDIN carries `cwd`, and the
-///   `PromptSubmit` trigger exposes the prompt as the `USER_PROMPT` environment
+///   `UserPromptSubmit` trigger exposes the prompt as the `USER_PROMPT` environment
 ///   variable. That is the route by which a `session-start` payload would carry the
 ///   real question instead of the fixed string RF-04 removes. P4, not here.
 /// - **Injection.** Per the docs, exit code `0` adds the command's STDOUT to the
@@ -953,7 +956,7 @@ const KIRO_TRIGGERS: &[&str] = &[
 /// Python hook is off the supported path.
 /// The kiro artifact: one prompt hook, one stop hook.
 ///
-/// **P4 replaced `SessionStart` with `PromptSubmit`, and `SessionStart` is gone from
+/// **P4 replaced `SessionStart` with `UserPromptSubmit`, and `SessionStart` is gone from
 /// the file — not merely unused.** The recorded event is still named `session-start`,
 /// because that is what `brain hook` calls it and what the session note is keyed on;
 /// what changed is *when kiro fires it*, from "the session opened" to "the user
@@ -966,8 +969,8 @@ pub fn kiro_hook_json(exe: &str) -> Result<String> {
     let v = serde_json::json!({
         "version": "v1",
         "hooks": [
-            kiro_hook(exe, "brain-prompt", "PromptSubmit", "session-start")?,
-            kiro_hook(exe, "brain-agent-stop", "AgentStop", "session-end")?
+            kiro_hook(exe, "brain-prompt", "UserPromptSubmit", "session-start")?,
+            kiro_hook(exe, "brain-agent-stop", "Stop", "session-end")?
         ]
     });
     // F-01: propagate the serialization error instead of panicking; the
@@ -1014,7 +1017,7 @@ fn kiro_hook(exe: &str, name: &str, trigger: &str, event: &str) -> Result<serde_
     //
     // `SessionStart` fires when the session opens, and at that moment **there is no
     // question** — the user has not typed anything yet. That is the whole argument for
-    // moving to `PromptSubmit`, where kiro documents the prompt as `USER_PROMPT` in the
+    // moving to `UserPromptSubmit`, where kiro documents the prompt as `USER_PROMPT` in the
     // environment of a `command` action. So the trigger that carries context is the
     // prompt one, and only that one embeds a question.
     //
@@ -1031,7 +1034,7 @@ fn kiro_hook(exe: &str, name: &str, trigger: &str, event: &str) -> Result<serde_
     // `"$USER_PROMPT"` is quoted so a prompt with spaces stays one argument, and it is a
     // separate flag rather than a key in the JSON payload: inside JSON-in-a-shell-string a
     // quote in the question would end the string and break the payload.
-    let question_arg = if trigger == "PromptSubmit" {
+    let question_arg = if trigger == "UserPromptSubmit" {
         r#" --question "$USER_PROMPT""#.to_string()
     } else {
         String::new()
@@ -1594,7 +1597,7 @@ mod interactive {
         }
         // The two the artifact means to use, spelled the documented way.
         //
-        // **`PromptSubmit` replaced `SessionStart`, it did not join it.** P4 is the
+        // **`UserPromptSubmit` replaced `SessionStart`, it did not join it.** P4 is the
         // reason: the job of this hook on `session-start` is to inject context, and
         // context can only be relevant to something the user asked. At `SessionStart`
         // they have not typed anything — kiro documents the prompt as `USER_PROMPT`, and
@@ -1612,14 +1615,15 @@ mod interactive {
         // *valid* kiro trigger names, not the set this artifact installs, and removing a
         // name from it would make the guard above reject a hook someone legitimately
         // writes later.
-        assert!(seen.contains(&"PromptSubmit"), "got {seen:?}");
+        assert!(seen.contains(&"UserPromptSubmit"), "got {seen:?}");
         assert!(
             !seen.contains(&"SessionStart"),
             "installing both would record two session sections per session: got {seen:?}"
         );
-        // `AgentStop` and not a `SessionEnd`: `SessionEnd` is not a kiro trigger, and
-        // `AgentStop` is the one that exists on both IDE and CLI.
-        assert!(seen.contains(&"AgentStop"), "got {seen:?}");
+        // `Stop` and not a `SessionEnd`: `SessionEnd` is not a kiro trigger, and
+        // `Stop` is the end-of-turn name confirmed on a real kiro. No IDE-vs-CLI
+        // coverage claim here: the old comment asserted one from the docs alone.
+        assert!(seen.contains(&"Stop"), "got {seen:?}");
     }
 
     /// The dotted names are gone for good, asserted as text so the check does not
@@ -1644,9 +1648,9 @@ mod interactive {
             .expect_err("SessionEnd is not a kiro trigger");
         let msg = err.to_string();
         assert!(msg.contains("SessionEnd"), "the error must name the offender: {msg}");
-        assert!(msg.contains("AgentStop"), "and list the known ones: {msg}");
+        assert!(msg.contains("UserPromptSubmit"), "and list the known ones: {msg}");
         // A real one still builds.
-        assert!(kiro_hook("/b", "n", "AgentStop", "session-end").is_ok());
+        assert!(kiro_hook("/b", "n", "Stop", "session-end").is_ok());
     }
 }
 
