@@ -409,7 +409,34 @@ mesmos de serve-mcp; o shutdown é o mesmo nos três: SIGINT ou SIGTERM, para qu
     /// Gerencia projetos e vínculos de notas
     Project { #[command(subcommand)] sub: ProjectCmd },
     /// Instala MCP, regras e serviço (uso único)
-    Setup { #[arg(default_value = "all")] target: String, #[arg(long, default_value_t = 8321)] mcp_port: u16, #[arg(long, default_value_t = 8322)] viewer_port: u16, #[arg(long)] brain_dir: Option<String>, #[arg(long)] dir: Option<String>, #[arg(long)] force: bool, #[arg(long)] dry_run: bool },
+    Setup {
+        /// opencode | kiro | systemd | shell | project | all
+        #[arg(default_value = "all")]
+        target: String,
+        #[arg(long, default_value_t = 8321)]
+        mcp_port: u16,
+        #[arg(long, default_value_t = 8322)]
+        viewer_port: u16,
+        #[arg(long)]
+        brain_dir: Option<String>,
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        dry_run: bool,
+        /// Nao interativo: assume os defaults, nao pergunta, nao grava projeto
+        /// (R-07). Tambem aceito como `BRAIN_SETUP_NONINTERACTIVE=1`.
+        #[arg(long)]
+        yes: bool,
+        /// Grava este projeto para o diretorio atual, sem perguntar. A resposta
+        /// explicita nao-interativa a pergunta do projeto.
+        #[arg(long)]
+        project: Option<String>,
+        /// Grava "nao usar brain aqui" para o diretorio atual, sem perguntar.
+        #[arg(long)]
+        decline_project: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1466,8 +1493,11 @@ async fn main() -> Result<()> {
         Cmd::Hook { event, project, payload, question } => {
             hook_handle(event, project, payload, question, db).await?;
         }
-        Cmd::Setup { target, mcp_port, viewer_port, brain_dir, dir, force, dry_run } => {
-            setup::run_setup(&setup::SetupOpts { target, mcp_port, viewer_port, db: db.clone(), brain_dir, dir, force, dry_run })?;
+        Cmd::Setup { target, mcp_port, viewer_port, brain_dir, dir, force, dry_run, yes, project, decline_project } => {
+            setup::run_setup(&setup::SetupOpts {
+                target, mcp_port, viewer_port, db: db.clone(), brain_dir, dir,
+                force, dry_run, yes, project, decline_project,
+            })?;
         }
         Cmd::Server { sub } => match sub {
             ServerCmd::Start { port, vault, old_index } => {
