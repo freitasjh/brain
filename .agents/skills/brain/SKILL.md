@@ -478,7 +478,7 @@ async def fetch_data(url):
 
 ### Escopo: Projeto vs Global
 
-As camadas `arquitetura` e `regras` e `estudos` usam **scope** para separar conteúdo:
+As camadas `arquitetura`, `regras` e `estudos` usam **scope** para separar conteúdo:
 
 - **`scope="projetos"`**: Conhecimento específico do projeto atual
   - Ex: "Arquitetura de módulos do sistema X"

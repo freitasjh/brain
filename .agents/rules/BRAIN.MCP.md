@@ -82,7 +82,7 @@ Quando o Brain MCP está configurado, os agentes têm acesso a estas tools:
 
 ## 📂 Camadas do vault com Scope
 
-As camadas `arquitetura` e `regras` e `estudos` usam **scope** para separar conteúdo:
+As camadas `arquitetura`, `regras` e `estudos` usam **scope** para separar conteúdo:
 
 | Camada | Scope | Conteúdo | Exemplo |
 |--------|-------|----------|---------|

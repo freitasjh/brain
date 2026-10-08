@@ -1702,10 +1702,18 @@ impl Store {
             self.conn.query_row("SELECT id FROM projects WHERE name=?1", params![pname], |r| r.get(0)).optional()?.flatten()
         } else { None };
         let missing_project = project.is_some() && project_id_filter.is_none();
+        // TD-F2: early-return instead of threading `!missing_project` through
+        // the FTS (below) and vector (vec-scan) gates. Equivalent: with an
+        // unknown project every stream empties anyway — FTS/vec scans are
+        // skipped, and the post-filter drops all entity/graph candidates
+        // (`project_id_filter_opt` is `None` → every path `continue`s).
+        if missing_project {
+            return Ok(Vec::new());
+        }
         // 1. FTS candidates (project filter applied inside the query, before LIMIT)
         let mut fts_scores: HashMap<String, f32> = HashMap::new();
         let mut fts_rank: HashMap<String, usize> = HashMap::new();
-        if !missing_project && !query.trim().is_empty() {
+        if !query.trim().is_empty() {
             // A1: escape FTS5 specials + SQL ops to prevent syntax error / injection
             let sanitized = fts5_match_expr(query);
             if !sanitized.is_empty() {
@@ -1740,14 +1748,19 @@ impl Store {
                     }
                 }
             }
-            // if project filter present but project not found, skip vector scan (no matches)
-            if !missing_project {
+            // TD-F2: the old `if !missing_project` gate stood here. It is
+            // unreachable-gated by the early return above, so the scan below
+            // runs unconditionally once `qv` exists — no nesting left.
                 let mut sql = "SELECT path, snippet, layer, scope, tags, embedding, chunk_index, project_id FROM chunks WHERE embedding IS NOT NULL".to_string();
-                let mut filter_params: Vec<String> = Vec::new();
+                // TD-F1: pid binds as typed i64 (Value::Integer), not via
+                // `pid.to_string()`. String binding relied on SQLite's loose
+                // affinity to compare INTEGER = TEXT; the typed bind compares
+                // INTEGER = INTEGER on both UNION branches.
+                let mut filter_params: Vec<rusqlite::types::Value> = Vec::new();
                 let mut filter_sql_parts: Vec<String> = Vec::new();
-                if let Some(lf) = layer { filter_sql_parts.push("layer = ?".to_string()); filter_params.push(lf.to_string()); }
-                if let Some(sf) = scope { filter_sql_parts.push("scope = ?".to_string()); filter_params.push(sf.to_string()); }
-                if let Some(pid) = project_id_filter { filter_sql_parts.push("(path IN (SELECT path FROM notes WHERE project_id = ? UNION SELECT note_path FROM note_projects WHERE project_id = ?))".to_string()); filter_params.push(pid.to_string()); filter_params.push(pid.to_string()); }
+                if let Some(lf) = layer { filter_sql_parts.push("layer = ?".to_string()); filter_params.push(rusqlite::types::Value::Text(lf.to_string())); }
+                if let Some(sf) = scope { filter_sql_parts.push("scope = ?".to_string()); filter_params.push(rusqlite::types::Value::Text(sf.to_string())); }
+                if let Some(pid) = project_id_filter { filter_sql_parts.push("(path IN (SELECT path FROM notes WHERE project_id = ? UNION SELECT note_path FROM note_projects WHERE project_id = ?))".to_string()); filter_params.push(rusqlite::types::Value::Integer(pid)); filter_params.push(rusqlite::types::Value::Integer(pid)); }
                 if !filter_sql_parts.is_empty() {
                     sql.push_str(" AND ");
                     sql.push_str(&filter_sql_parts.join(" AND "));
@@ -1793,7 +1806,6 @@ impl Store {
                     vec_rank.insert(p.clone(), i+1);
                 }
             }
-        }
         // 3. entity stream: tag filter => boost
         let mut ent_scores: HashMap<String, f32> = HashMap::new();
         let mut ent_rank: HashMap<String, usize> = HashMap::new();

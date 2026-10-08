@@ -53,7 +53,10 @@ pub fn merge_mcp_json(existing: Option<&str>, url: &str) -> String {
         "brain".to_string(),
         serde_json::json!({"transport": "sse", "url": url}),
     );
-    serde_json::to_string_pretty(&v).unwrap()
+    // F-01: `to_string_pretty` on a `json!`-built `Value` cannot fail in
+    // practice, but an `unwrap` turns even the impossible into a panic path.
+    // Fall back to `{}` rather than panicking the installer.
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn servers_mut(v: &mut serde_json::Value) -> &mut serde_json::Map<String, serde_json::Value> {
@@ -93,7 +96,8 @@ pub fn merge_project_json(existing: Option<&str>, brain_rel: &str, url: &str) ->
             arr.push(val);
         }
     }
-    serde_json::to_string_pretty(&v).unwrap()
+    // F-01: see `merge_mcp_json` — fall back instead of panicking.
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
 
 pub fn systemd_unit(exe: &str, db: &str, subcommand: &str, port: u16, desc: &str) -> String {
@@ -699,7 +703,7 @@ fn parse_project(line: Option<&str>, candidates: &[String]) -> Answer {
 /// typing an answer is slow, and this must not cut them off. It is a backstop for
 /// *nobody*, not a prompt.
 #[cfg(unix)]
-fn set_stdin_nonblocking() -> bool {
+fn set_stdin_nonblocking() -> Option<i32> {
     // SAFETY: `fcntl` with F_GETFL/F_SETFL on fd 0 only reads and then restores
     // descriptor flags; it takes no pointers and cannot invalidate anything. The
     // previous flags are kept in the file descriptor itself, so nothing to leak.
@@ -712,18 +716,50 @@ fn set_stdin_nonblocking() -> bool {
     unsafe {
         let flags = fcntl(0, F_GETFL, 0);
         if flags < 0 {
-            return false;
+            return None;
         }
-        fcntl(0, F_SETFL, flags | O_NONBLOCK) >= 0
+        if fcntl(0, F_SETFL, flags | O_NONBLOCK) < 0 {
+            return None;
+        }
+        Some(flags)
     }
 }
 
 #[cfg(not(unix))]
-fn set_stdin_nonblocking() -> bool {
+fn set_stdin_nonblocking() -> Option<i32> {
     // No portable equivalent declared here. The `interactive()` check still refuses to
     // ask unless stdin is a terminal, so the only exposure is a terminal that is a
     // terminal and never answers.
-    false
+    None
+}
+
+/// Restores the fd-0 flags saved by [`set_stdin_nonblocking`].
+#[cfg(unix)]
+fn restore_stdin(flags: i32) {
+    unsafe extern "C" {
+        fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+    }
+    const F_SETFL: i32 = 4;
+    unsafe {
+        fcntl(0, F_SETFL, flags);
+    }
+}
+
+/// Guard restoring O_NONBLOCK state on drop, so every `read_line` exit path
+/// (F-02) leaves stdin as found. Without it the installer leaked O_NONBLOCK
+/// into whatever ran next on the same fd.
+#[cfg(unix)]
+struct StdinNonblockingGuard {
+    orig: Option<i32>,
+}
+
+#[cfg(unix)]
+impl Drop for StdinNonblockingGuard {
+    fn drop(&mut self) {
+        if let Some(flags) = self.orig {
+            restore_stdin(flags);
+        }
+    }
 }
 
 fn read_line() -> Option<String> {
@@ -734,7 +770,13 @@ fn read_line() -> Option<String> {
     // simply blocks, so a poll loop over it would be decoration — and a decoration that
     // reads like a fix is worse than none. With O_NONBLOCK the read returns
     // `WouldBlock` and the deadline can be checked.
-    let nonblocking = set_stdin_nonblocking();
+    // F-02: the guard restores the original fd flags on every exit path.
+    #[cfg(unix)]
+    let _restore_guard = StdinNonblockingGuard { orig: set_stdin_nonblocking() };
+    #[cfg(unix)]
+    let nonblocking = _restore_guard.orig.is_some();
+    #[cfg(not(unix))]
+    let nonblocking = { let _ = set_stdin_nonblocking(); false };
     let deadline = std::time::Instant::now() + READ_TIMEOUT;
     let mut buf = String::new();
     loop {
@@ -928,7 +970,9 @@ pub fn kiro_hook_json(exe: &str) -> Result<String> {
             kiro_hook(exe, "brain-agent-stop", "AgentStop", "session-end")?
         ]
     });
-    Ok(serde_json::to_string_pretty(&v).unwrap())
+    // F-01: propagate the serialization error instead of panicking; the
+    // `Value` is built from `json!` so this fails only on allocation failure.
+    serde_json::to_string_pretty(&v).map_err(|e| anyhow::anyhow!("kiro hook json: {e}"))
 }
 
 /// One hook entry, refusing a trigger that is not in [`KIRO_TRIGGERS`].
@@ -1227,6 +1271,23 @@ mod tests {
         let u = systemd_unit("/usr/bin/brain", "/data/brain.db", "serve-mcp", 8321, "MCP SSE");
         assert!(u.contains("ExecStart=/usr/bin/brain --db /data/brain.db serve-mcp --port 8321"));
         assert!(u.contains("WantedBy=default.target"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f02_read_line_restores_stdin_flags() {
+        // F-02 proof: fd-0 flags are identical before/after `read_line`,
+        // so the installer no longer leaks O_NONBLOCK into the next process
+        // sharing the fd. Under `cargo test` stdin is EOF, so `read_line`
+        // returns `None` without blocking.
+        unsafe extern "C" {
+            fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+        }
+        const F_GETFL: i32 = 3;
+        let before = unsafe { fcntl(0, F_GETFL, 0) };
+        let _ = read_line();
+        let after = unsafe { fcntl(0, F_GETFL, 0) };
+        assert_eq!(before, after, "read_line must restore fd-0 flags (F-02)");
     }
 
     #[test]

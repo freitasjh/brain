@@ -1291,8 +1291,16 @@ async fn main() -> Result<()> {
             let store = Store::open(&db)?;
             let tags_v: Vec<String> = tags.unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let project_id = if let Some(pname) = project {
-                let proj = store.project_get(&pname)?.or_else(|| Some(store.project_create(&pname,"").unwrap()));
-                proj.map(|p| p.id)
+                // F-00 (was `.unwrap()`) + TD-F4-A: a new project name still
+                // creates the project (exit 0, scripts unaffected) but warns
+                // on stderr so a typo does not silently spawn a namespace.
+                match store.project_get(&pname)? {
+                    Some(p) => Some(p.id),
+                    None => {
+                        eprintln!("warning: project '{pname}' novo — será criado; confira com project_list");
+                        Some(store.project_create(&pname, "")?.id)
+                    }
+                }
             } else { None };
             let nid = store.note_upsert(&fp, &layer, scope.as_deref(), &content, project_id, &tags_v, pinned, expires_at.as_deref())?;
             let chunks = brain_core::chunk_text(&content, brain_core::CHUNK_TARGET_TOKENS);

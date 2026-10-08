@@ -80,7 +80,7 @@ Você é o compilador central da metodologia SDD (Specification-Driven Developme
 - **Processo**:
   1. **Completeness**: Todos os checkboxes em TASKS.md marcados? Nenhum TODO pendente?
   2. **Correctness**: Cada requisito funcional da SPEC tem correspondência no código? Testes passando?
-  3. **Coherence**: Decisões de design (ADRs) refletem no código? Naming conventions corretos? Sem vazamentos de camada?
+  3. **Coherence**: Decisões de design (ADRs) refletem no código? Naming conventions corretas? Sem vazamentos de camada?
   4. Executar build e testes: `mvn clean install` (backend) ou `npm run build && npm run test:run` (frontend).
   5. Se frontend: checar Chrome DevTools (Network + Console) — zero erros/warnings.
 - **Saída**: `.spec/[feature-name]/VERIFY.md` com resultado das 3 dimensões + lista de gaps (se houver).

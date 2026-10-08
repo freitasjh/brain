@@ -343,7 +343,7 @@ impl Brain {
         ok(serde_json::json!({"ok": true, "to": dir.to_string_lossy(), "written": written, "refused": refused}))
     }
 
-    #[tool(description = "Delete TTL-expired notes (pinned never expires)")]
+    #[tool(description = "Delete TTL-expired notes. `expires_at` BEATS `pinned`: a pinned note that has expired is deleted too, and the path is logged as a warning first. Always run with dry_run first.")]
     async fn brain_forget_sweep(&self, Parameters(a): Parameters<ForgetSweepArgs>) -> Result<CallToolResult, McpError> {
         let s = self.store()?;
         ok(serde_json::json!({"deleted": s.forget_sweep(a.dry_run.unwrap_or(false)).map_err(fail)?}))
