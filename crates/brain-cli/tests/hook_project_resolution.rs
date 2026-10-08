@@ -1090,5 +1090,110 @@ fn an_unrecognised_motivo_is_not_a_refusal() {
 }
 
 // ---------------------------------------------------------------------------
-// RF-07.2 — the config write is locked
+// hook-empty-question-fallback — SPEC §2 #1 amenda (opção A aprovada)
 // ---------------------------------------------------------------------------
+
+/// Store one `regras` note owned by `project` through the real CLI.
+fn pano_store(w: &World, path: &str, body: &str, scope: &str, project: Option<&str>) {
+    let mut c = Command::new(bin());
+    c.arg("--db").arg(w.db()).arg("store").arg("regras").arg(path).arg(body)
+        .arg("--scope").arg(scope)
+        .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA);
+    if let Some(p) = project {
+        c.arg("--project").arg(p);
+    }
+    let o = c.output().expect("store");
+    assert!(o.status.success(), "store regras/{path}: {}", out(&o));
+}
+
+fn pano_stderr(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+/// (a) Vazio + projeto com notas → panorama impresso, sem INJECT-vazio.
+#[test]
+fn empty_question_with_a_known_project_prints_a_panorama_not_an_empty_marker() {
+    let w = World::new("pano-full");
+    register(&w, "hive");
+    pano_store(&w, "hive/naming", "## Naming\n\nUse kebab-case for every path.", "projetos", Some("hive"));
+    pano_store(&w, "hive/auth", "## Auth\n\nRotate the session token on login.", "projetos", Some("hive"));
+    let wd = w.work("anything");
+
+    let o = w.hook(&wd, &["--project", "hive", "--payload", r#"{"id":"pano-1"}"#]);
+    assert!(o.status.success(), "{}", out(&o));
+    let text = out(&o);
+    assert!(
+        text.contains("--- Brain context (projeto hive — panorama, sem pergunta) ---"),
+        "panorama header missing:\n{text}"
+    );
+    assert!(
+        text.contains("hive/naming"),
+        "owned project note must appear in the panorama:\n{text}"
+    );
+    assert!(
+        !text.contains("INJECT: (no context found)"),
+        "panorama is context, not the empty marker:\n{text}"
+    );
+    assert!(
+        pano_stderr(&o).contains("showing project panorama"),
+        "stderr must carry the panorama suffix:\n{text}"
+    );
+    assert!(
+        stdout(&o).lines().any(|l| l.starts_with("hook ok ")),
+        "R-06: hook ok line intact:\n{text}"
+    );
+}
+
+/// (b) Vazio + projeto vazio/unknown → INJECT vazio (T4.3 preservado).
+#[test]
+fn empty_question_with_no_panorama_keeps_the_empty_marker() {
+    let w = World::new("pano-empty");
+    let wd = w.work("anything");
+
+    let o = w.hook(&wd, &["--project", "ghost-proj", "--payload", r#"{"id":"pano-2"}"#]);
+    assert!(o.status.success(), "{}", out(&o));
+    let text = out(&o);
+    assert!(
+        text.contains("INJECT: (no context found)"),
+        "with no panorama the empty marker stays:\n{text}"
+    );
+    assert!(
+        !text.contains("panorama, sem pergunta"),
+        "no panorama header without notes:\n{text}"
+    );
+    assert!(
+        pano_stderr(&o).contains("no question in the payload")
+            && !pano_stderr(&o).contains("showing project panorama"),
+        "stderr degrades without the panorama suffix:\n{text}"
+    );
+}
+
+/// (c) Pergunta real continua igual (T4.1 intacto, sem panorama).
+#[test]
+fn a_real_question_does_not_trigger_the_panorama() {
+    let w = World::new("pano-real");
+    register(&w, "hive");
+    pano_store(&w, "hive/naming", "## Naming\n\nUse kebab-case for every path.", "projetos", Some("hive"));
+    pano_store(&w, "hive/auth", "## Auth\n\nRotate the session token on login.", "projetos", Some("hive"));
+    let wd = w.work("anything");
+
+    let o = w.hook(
+        &wd,
+        &["--project", "hive", "--question", "kebab-case", "--payload", r#"{"id":"pano-3"}"#],
+    );
+    assert!(o.status.success(), "{}", out(&o));
+    let text = out(&o);
+    assert!(text.contains("hive/naming"), "question must drive the search:\n{text}");
+    assert!(
+        !text.contains("hive/auth"),
+        "unrelated note must stay out:\n{text}"
+    );
+    assert!(
+        !text.contains("panorama, sem pergunta"),
+        "a real question never prints the panorama header:\n{text}"
+    );
+    assert!(
+        !text.contains("INJECT: (no context found)"),
+        "a matching question finds context:\n{text}"
+    );
+}

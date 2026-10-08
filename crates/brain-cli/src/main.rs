@@ -1212,8 +1212,18 @@ async fn hook_handle(event: String, project: Option<String>, payload: Option<Str
         // to fall back to.
         let (query, degraded) = inject_query(question);
         debug_assert!(!degraded || query.trim().is_empty());
+        // Amenda SPEC §2 #1 (hook-empty-question-fallback): vazio + projeto
+        // conhecido = panorama útil com aviso; vazio + sem projeto/panorama
+        // vazio = `INJECT: (no context found)` como hoje. Só leitura, limite 5,
+        // sem DDL; erro (ex.: project not found) vira vetor vazio, nunca falha.
+        let mut panorama: Vec<brain_core::Note> = Vec::new();
         if degraded {
-            eprintln!("hook: no question in the payload; injecting by project only (no fixed query)");
+            panorama = store.project_notes(&project).unwrap_or_default().into_iter().take(5).collect();
+            if panorama.is_empty() {
+                eprintln!("hook: no question in the payload; injecting by project only (no fixed query)");
+            } else {
+                eprintln!("hook: no question in the payload; injecting by project only (no fixed query); showing project panorama");
+            }
         }
         // The project is a **filter**, not a term. It used to be spliced into the query
         // as `format!("regras {}", project)`, which is the opposite of a filter: it made
@@ -1234,7 +1244,14 @@ async fn hook_handle(event: String, project: Option<String>, payload: Option<Str
             outln!("--- Brain context (projetos) ---");
             for r in &res_proj { outln!("{} [{}] {}", r.path, r.score, r.snippet.chars().take(120).collect::<String>()); }
         }
-        if res_global.is_empty() && res_proj.is_empty() {
+        if degraded && !panorama.is_empty() {
+            outln!("--- Brain context (projeto {} — panorama, sem pergunta) ---", project);
+            for n in &panorama {
+                let snippet: String = n.content.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).take(120).collect();
+                outln!("{} {}", n.path, snippet);
+            }
+        }
+        if res_global.is_empty() && res_proj.is_empty() && panorama.is_empty() {
             outln!("INJECT: (no context found)");
         }
     }

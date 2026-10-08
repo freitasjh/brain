@@ -1396,10 +1396,10 @@ fn the_project_name_never_reaches_the_query() {
     assert!(by_vocab.contains("hive/naming"), "project notes must be reachable by their own vocabulary:\n{by_vocab}");
 }
 
-/// **T4.3.** No question in the payload must not be worse than today, and must not
-/// invent one. Measured on this corpus, the old fixed query returns **zero** results, so
-/// the honest empty query loses nothing — and it says so on stderr instead of printing
-/// unrelated notes under a header that implies they answered something.
+/// **T4.3, amended by hook-empty-question-fallback (SPEC §2 #1, opção A).**
+/// No question + projeto conhecido = panorama útil com aviso; o marker vazio
+/// fica só para panorama vazio (cobertura em `hook_project_resolution`:
+/// `empty_question_with_no_panorama_keeps_the_empty_marker`).
 #[test]
 fn a_payload_without_a_question_degrades_to_project_context_and_says_so() {
     let w = World::new("p4degrade");
@@ -1443,10 +1443,23 @@ fn a_payload_without_a_question_degrades_to_project_context_and_says_so() {
         !text.contains("padrões melhores práticas"),
         "the fixed query must be gone from the codebase's behaviour:\n{text}"
     );
-    // SPEC §2: empty query prints the honest marker, not unrelated notes.
+    // SPEC §2 #1 amenda: corpus tem notas do projeto → panorama, não marker.
+    // O marker vazio continua para panorama vazio (ver hook_project_resolution).
     assert!(
-        text.contains("INJECT: (no context found)"),
-        "an empty question must print the empty marker:\n{text}"
+        text.contains("--- Brain context (projeto hive — panorama, sem pergunta) ---"),
+        "an empty question with project notes must print the panorama:\n{text}"
+    );
+    assert!(
+        text.contains("hive/naming"),
+        "the panorama must carry the project's notes:\n{text}"
+    );
+    assert!(
+        !text.contains("INJECT: (no context found)"),
+        "panorama is context, not the empty marker:\n{text}"
+    );
+    assert!(
+        text.contains("showing project panorama"),
+        "the panorama suffix must be reported:\n{text}"
     );
 }
 
