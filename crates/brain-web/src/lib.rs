@@ -534,14 +534,20 @@ mod tests {
     const JS_MEMBERS: &[&str] = &[
         "json", "ok", "message", "innerHTML", "className", "textContent", "title",
         "getElementById", "querySelectorAll", "map", "length", "trim", "set",
-        "replace", "split", "join", "slice", "toFixed", "entries", "timeout",
+        "replace", "replaceAll", "split", "join", "slice", "toFixed", "entries", "timeout",
     ];
 
     /// Roots that hold no payload data, so any member read off one is a library
     /// or DOM call by construction.
+    ///
+    /// `cv`/`ctx` are the graph canvas and its 2d context, `ev` a UI event and
+    /// `rect` its bounding rect (`renderGraph` hit-test/pan/zoom) — all real DOM
+    /// objects, none carrying endpoint data. `Math` is the same class of root as
+    /// the `Object` already listed: a builtin, not a payload.
     const JS_ROOTS: &[&str] = &[
         "Object", "document", "window", "console", "location", "resp", "err",
         "resultsEl", "statusEl", "AbortSignal", "params",
+        "Math", "cv", "ctx", "ev", "rect",
     ];
 
     /// Every dotted `data.<a>.<b>…` chain in `src`, each walked as far as the
@@ -894,7 +900,7 @@ mod tests {
             .unwrap_or_else(|| panic!("browseAll no longer navigates via readNote — re-check this guard"));
         let args = &markup[call + "readNote(".len()..];
         let args = &args[..args.find(')').expect("unterminated readNote call")];
-        for banned in ["slice", "split", "replace", "substr", "substring"] {
+        for banned in ["slice", "split", "replace", "replaceAll", "substr", "substring"] {
             assert!(
                 !args.contains(&format!(".{banned}(")),
                 "browseAll rewrites the note path with `.{banned}(` before handing it to readNote: {args:?} — /api/read matches notes.path exactly, so the click resolves to \"not found\""
@@ -1256,6 +1262,106 @@ mod tests {
         assert!(!body.contains("LIMIT"), "graph_snapshot caps its queries — a capped graph orphans edges");
         assert!(!body.contains("recent_paths"), "graph_snapshot must not reuse the capped browse listing (RF-06)");
         assert!(body.contains("note_projects"), "graph_snapshot must union owned and linked notes in SQL (RF-03) — dropping the linked side blinds the filter");
+    }
+
+        /// RF-13(a): `renderGraph` reads only fields `/api/graph` serves.
+    ///
+    /// Same shape as the TD-011 guard, against the real handler payload: every
+    /// dotted read in the function body must be a served leaf (`nodes`, `edges`,
+    /// `dangling`, `projects`, node `id`/`kind`/`label`/`layer`, edge
+    /// `from`/`to`/`kind`), an entry in `JS_MEMBERS`, or a read off a
+    /// `JS_ROOTS` root. A canvas that reached for a field the endpoint never
+    /// sent would render `undefined` labels on every node — the exact class
+    /// TD-011 closed for the other three views.
+    ///
+    /// The assertion is two-sided on purpose: a pure phantom check passes for a
+    /// `renderGraph` that reads nothing, so the test also requires the four
+    /// top-level keys to be read — the dropdown cannot be populated from
+    /// `projects` it never looks at, and the counter cannot show a `dangling`
+    /// it never looks at either.
+    #[test]
+    fn viewer_graph_reads_only_fields_the_graph_endpoint_serves() {
+        let db = tmp_db("viewer-graph-wiring");
+        seed_graph(&db);
+        let (_, payload) = graph_get(&db, None);
+        let _ = std::fs::remove_file(&db);
+
+        let html = viewer_code();
+        let body = viewer_fn(&html, "renderGraph");
+        assert_no_phantom_reads(&body, &payload, "renderGraph");
+
+        let reads = entry_field_reads(&body);
+        for need in ["nodes", "edges", "dangling", "projects"] {
+            assert!(
+                reads.contains(&need.to_string()),
+                "renderGraph must read `{need}` from the graph payload, or the view it feeds is dead; reads: {reads:?}"
+            );
+        }
+    }
+
+    /// RF-13(b): a graph click resolves the way `/api/read` resolves it.
+    ///
+    /// Static half first, on the markup view: the `readNote(` call site inside
+    /// `renderGraph` must hand over the node id verbatim — no
+    /// `slice`/`split`/`replace`/`replaceAll`/`substr`/`substring` rewrite between
+    /// the entry and the call (the layer-strip that made every browse row
+    /// unclickable, guarded for `browseAll` three tests up). `replaceAll` is
+    /// listed separately because the `.replace(` substring never matches inside
+    /// `.replaceAll(` — without it the ban is evadable by one method name.
+    /// The project-hub path needs no rewrite either: the hub's served `label` already *is* the project name,
+    /// so filtering reads `label` instead of stripping a `projeto:` prefix.
+    ///
+    /// Behavioural half: every served note id resolves via `note_get` — the
+    /// exact lookup `/api/read` performs — and every hub id is
+    /// `projeto:` + its own served `label`, so the filter it applies names a
+    /// real project.
+    #[test]
+    fn viewer_graph_click_hands_the_read_endpoint_a_resolvable_id() {
+        let db = tmp_db("viewer-graph-click");
+        seed_graph(&db);
+        let (_, payload) = graph_get(&db, None);
+
+        let markup = viewer_fn(&viewer_markup(), "renderGraph");
+        let call = markup
+            .find("readNote(")
+            .unwrap_or_else(|| panic!("renderGraph no longer navigates via readNote — re-check this guard"));
+        let args = &markup[call + "readNote(".len()..];
+        let args = &args[..args.find(')').expect("unterminated readNote call")];
+        for banned in ["slice", "split", "replace", "replaceAll", "substr", "substring"] {
+            assert!(
+                !args.contains(&format!(".{banned}(")),
+                "renderGraph rewrites the node id with `.{banned}(` before handing it to readNote: {args:?} — /api/read matches notes.path exactly, so the click resolves to \"not found\""
+            );
+        }
+        assert!(
+            args.contains(".id"),
+            "renderGraph must hand readNote the node's `id` verbatim; args: {args:?}"
+        );
+        assert!(
+            markup.contains(".label"),
+            "the project-hub click must filter from the hub's served `label` (already the project name), not by stripping the `projeto:` prefix"
+        );
+
+        {
+            let s = brain_store::Store::open(&db).unwrap();
+            for nd in payload["nodes"].as_array().unwrap() {
+                let id = nd["id"].as_str().unwrap();
+                if nd["kind"] == "note" {
+                    assert!(
+                        s.note_get(id).unwrap().is_some(),
+                        "/api/graph serves note `{id}` but /api/read cannot resolve it — every click on that node would 404"
+                    );
+                } else {
+                    let label = nd["label"].as_str().unwrap();
+                    assert_eq!(
+                        id,
+                        format!("projeto:{label}"),
+                        "hub `{id}` must be `projeto:` + its served label, or the click filters a name no project owns"
+                    );
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&db);
     }
 
     /// R-07 as a source scan: the graph handler degrades to `{"error"}`,
