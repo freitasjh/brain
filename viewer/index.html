@@ -45,7 +45,7 @@
 <div class="search-box">
   <input type="text" id="query" placeholder="Search the brain..." onkeydown="if(event.key==='Enter') search()">
   <button onclick="search()">Search</button>
-  <button onclick="browseAll()" style="background:#1f6feb;">Browse All</button>
+  <button onclick="browseAllReset()" style="background:#1f6feb;">Browse All</button>
   <button onclick="renderGraph()" style="background:#f0883e;">Grafo</button>
 </div>
 
@@ -190,10 +190,22 @@ async function browseAll() {
       return;
     }
 
+    // currentLayer filters the browse list (pills); "" = all layers.
+    // Skip-in-loop on purpose: items.filter/push would add member reads the
+    // brain-web wiring guard flags as phantom (TD-011) — only served fields
+    // (entries/layer/path/chunks_total/chunks_embedded) are read here.
+    const layer = currentLayer;
     const grouped = {};
     for (const item of items) {
+      if (layer && item.layer !== layer) continue;
       if (!grouped[item.layer]) grouped[item.layer] = [];
       grouped[item.layer].push(item);
+    }
+    if (Object.keys(grouped).length === 0) {
+      resultsEl.innerHTML = layer
+        ? `<div class="empty">📂 No notes in layer ${layer}</div>`
+        : '<div class="empty">📂 No notes in vault</div>';
+      return;
     }
 
     // TD-011. The badge used to read `n.indexed`, a field /api/list has never
@@ -289,6 +301,17 @@ function setLayer(btn, layer) {
   document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   currentLayer = layer;
+  browseAll();
+}
+
+function browseAllReset() {
+  const allBtn = document.querySelector('.layer-btn[data-layer=""]');
+  if (allBtn) {
+    document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
+    allBtn.classList.add('active');
+  }
+  currentLayer = '';
+  browseAll();
 }
 
 async function search() {
