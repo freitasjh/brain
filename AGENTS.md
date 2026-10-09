@@ -130,7 +130,7 @@ pergunta (IDE não dá tty), então quem responde é o `setup`. Ver `brain setup
 | `brain_project_unlink(note_path, project)` | Desliga nota |
 | `brain_project_delete(name)` | Deleta projeto |
 | `brain_migrate(vault?, old_index?)` | Import legado `vault/*.md` → `brain.db` |
-| `brain serve --port` | Viewer axum 8322 `/api/status,search,read,list` |
+| `brain serve --port` | Viewer axum 8322 `/api/status,search,read,list,graph?project=` |
 | `brain serve-mcp --port 8321` | MCP SSE rmcp 8321 `/sse`, per-request Store + fila de embedding em background, coexist viewer 8322 |
 | `brain server start [--port] [--vault] [--old-index]` | **O nome da spec (US-01.1).** Auto-importa o legado (`vault/`) e **arquiva em `vault.bak.tar.gz`** dentro de `BRAIN_EXPORT_ROOT` *antes* de servir; se o archive falhar, o import não roda. Bind e ferramentas idênticos a `serve-mcp`; shutdown idêntico (SIGINT **ou** SIGTERM). `serve`/`serve-mcp` não importam — use `migrate` se não quiser o archive |
 | `brain hook --event session-start\|tool-result\|session-end --project --payload JSON` | Hook Rust spool `XDG_RUNTIME_DIR/brain/hook-spool.jsonl` file lock + Store `sessoes/brain/<date>` |
