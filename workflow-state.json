@@ -2,16 +2,13 @@
   "project": "brain",
   "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
-  "current_feature": "brain-help-visual",
-  "current_phase": "completed",
+  "current_feature": "brain-multi-project-hooks",
+  "current_phase": "Deployed-panorama",
   "previous_phase": "completed",
-  "next_phase": null,
-  "type": "feature",
+  "next_phase": "feature-kiro-setup",
+  "type": "bugfix",
   "artifacts": {
-    "proposal": ".spec/brain-help-visual/PROPOSAL.md",
-    "spec": ".spec/brain-help-visual/SPEC.md",
-    "verify": ".spec/brain-help-visual/VERIFY.md",
-    "tests": "crates/brain-cli/tests/help_overview.rs"
+    "tasks": ".spec/bugs/project-shared-search/TASKS.md"
   },
   "features": [
     {
@@ -52,6 +49,11 @@
     {
       "name": "brain-help-visual",
       "phase": "committed",
+      "progress": 100
+    },
+    {
+      "name": "brain-multi-project-hooks",
+      "phase": "archived",
       "progress": 100
     }
   ],
@@ -193,23 +195,14 @@
   "test_count": 342,
   "test_pass": 253,
   "code_review": {
-    "last_invoked_at": "2026-09-28T00:00:00Z",
+    "last_invoked_at": "2026-10-08T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
-    "attention_issues": 2,
-    "cycles": 1,
-    "reviewer_notes": "code-reviewer (opencode.json:76; 'fullstack-code-reviewer' das regras NAO existe no repo). APPROVED zero 🔴. 2 must-fix aplicados: (1) main.rs comentario do outln! afirmava BrokenPipe inalcancavel a 1590 B/64 KB de buffer (H8); (2) bloco Options sem assert — mutacao M2 removendo <DB>+[env:] passava 11/11, agora pega 1. 4 decisoes registradas na SPEC: R-02 emendado (texto do clap fica EN), RF-06 (brain help solitario interceptado), duas paginas raiz por design (justificativa anterior REFUTADA), ADR-03 redact_url no env impresso.",
-    "reviewer_discoveries": [
-      "next_help_heading nao agrupa subcomandos no clap 4.6.6 — help_template.rs:394-396 monta secoes a partir dos argumentos do PAI; e propaga, renomeando Options: dos 20 subcomandos. ADR-01 v1 da SPEC era falso.",
-      "flatten_help inlina as FLAGS de cada subcomando no pai — brain --help virava as flags dos 20 comandos",
-      "o comentario que justificava excluir 'brain --db X --help' ('esconderia o BRAIN_DB_PATH resolvido') e REFUTADO: option_row tambem le std::env::var, entao a pagina custom mostraria o mesmo valor",
-      "R-02 ('todo texto em portugues') e literalmente falso na pagina: help/--help/--version sao texto do clap. Emendado em vez de fingido.",
-      "mutacao que passa verde e o sinal: remover o value name <DB> e a anotacao [env:] do bloco Options nao quebrava build nem teste (11/11)",
-      "que 'brain help' solitario virou interceptado foi mudanca de comportamento que a PROPOSAL nao previa — grep achou nenhum consumidor no repo, mas consumidor pode viver fora dele"
-    ]
+    "attention_issues": 0,
+    "reviewer_notes": "Final review APPROVED zero red; 2 yellows -> tech-debt followup untracked"
   },
   "harness_status": "passed",
-  "last_updated": "2026-09-28",
+  "last_updated": "2026-10-08",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -311,6 +304,55 @@
       "phase": "resolved",
       "status": "FECHADO e DEPLOYADO 2026-09-27. /api/list serve chunks_total e chunks_embedded (nomes identicos aos de EmbeddingCoverage em /api/status — nenhum quarto vocabulario); /api/search passou a servir chunk_index. browseAll deriva o badge de 4 estados: chunks_embedded>=1 -> '📝'; chunks_embedded==0 e chunks_total>0 -> '⚠️ FTS only'; chunks_total==0 -> '⚠️ No chunks' (falha distinta: chunks_sync que nunca rodou, nao fila); campo ausente -> SEM badge, porque um aviso cujo default e 'ligado' e o TD-011 em miniatura. ACHADOS COLATERAIS DA MESMA CLASSE: (1) item.chunk_index lido e nao servido -> viewer imprimia 'Chunk: undefined' em TODO hit; (2) browseAll passava n.path com o segmento de layer REMOVIDO para /api/read, que casa notes.path exato -> TODA nota do browse era unclickable (404 not found), e o .replace('.md','') era morto (paths sao extensionless) e mandava layer= que ReadQ nem tem campo. Varredura completa do viewer: o padrao 'campo lido que o endpoint nao serve' aparecia 5x, 3 vivas, todas fechadas. CASTIGO: remover o scan de browseAll E restaurar n.indexed deixa a suite 263/263 VERDE — nada mais no workspace pega TD-011. O scan de wiring (roda o handler de verdade, achata o payload, compara com o que o JS le) e a unica guarda. O extractor do TD-008 so entendia cadeias data.*, por isso nao via browseAll; agora e name-based. Deploy: PIDs 2785303/2785323. Round-trip /api/list -> /api/read: 25/25 ok; 277/277 notas com chunk embeddado; 0 FTS-only",
       "discovered_by": "lote TD-008 (achado colateral)"
+    },
+    {
+      "id": "TD-FOLLOWUP-project-shared",
+      "issues": [
+        "bind i64",
+        "let-chains",
+        "typo docs",
+        "typo cria projeto silencioso",
+        "backfill 28 sessoes"
+      ],
+      "severity": "P2/P3",
+      "phase": "open",
+      "status": "TASKS em .spec/tech-debts/project-shared-followup/TASKS.md"
+    },
+    {
+      "id": "TD-FOLLOWUP-project-shared",
+      "issues": [
+        "TD-F1..F5"
+      ],
+      "severity": "P2/P3",
+      "phase": "resolved",
+      "status": "FECHADO 2026-10-08: 947e3d6 + backfill 28 links"
+    },
+    {
+      "id": "TD-FOLLOWUP-hooks",
+      "issues": [
+        "F-00/F-01/F-02"
+      ],
+      "severity": "P3",
+      "phase": "resolved",
+      "status": "FECHADO 2026-10-08: 947e3d6"
+    },
+    {
+      "id": "TD-001",
+      "issues": [
+        "vec scan O(n)"
+      ],
+      "severity": "P2",
+      "phase": "deferred-confirmed",
+      "status": "Mantido deferred 2026-10-08 por decisão do usuário (só compensa >50k chunks)"
+    },
+    {
+      "id": "TD-009",
+      "issues": [
+        "boot order sem teste"
+      ],
+      "severity": "P3",
+      "phase": "accepted-confirmed",
+      "status": "Mantido accepted 2026-10-08 por decisão do usuário"
     }
   ],
   "test_breakdown": {
@@ -320,18 +362,16 @@
     "total": 452
   },
   "production": {
-    "deployed_at": "2026-09-27",
+    "deployed_at": "2026-10-08",
     "services": [
       "brain-mcp.service:8321",
       "brain-viewer.service:8322"
     ],
-    "pids": "3934190/3934191",
-    "schema_version": "4 (inalterado; nenhum DDL rodou no open)",
-    "tables": 15,
-    "notes": 285,
-    "chunks": 1027,
-    "projects": 6,
-    "embedding_coverage_pct": 100,
+    "pids": "1299535/1299534",
+    "notes": 507,
+    "chunks": 1981,
+    "embedding_coverage_pct": 99.85,
+    "head": "c3371a7",
     "version": "0.9.1"
   },
   "security": {
@@ -350,6 +390,11 @@
     {
       "portao": "P1->P2",
       "motivo": "usuario aprovou ('aprovado') antes do conteudo da SPEC ser exibido; SPEC gerada e registrada a posteriori nesta mesma sessao",
+      "data": "2026-09-28"
+    },
+    {
+      "portao": "P0->P1",
+      "motivo": "usuario aprovou sem ver o conteudo das 3 perguntas (escopo Fase C, bug fts5, versao). Defaults do orquestrador declarados explicitamente na SPEC em vez de nova rodada de perguntas - 2a ocorrencia do mesmo padrao.",
       "data": "2026-09-28"
     }
   ]
