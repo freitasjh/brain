@@ -31,6 +31,8 @@
   .empty { text-align: center; padding: 48px; color: #484f58; }
   .error { text-align: center; padding: 24px; color: #f85149; }
   .loading { text-align: center; padding: 24px; color: #8b949e; }
+  #graph-canvas { display: block; }
+  #graph-filter { max-width: 280px; }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #21262d; font-size: 12px; color: #484f58; text-align: center; }
 </style>
 </head>
@@ -44,6 +46,7 @@
   <input type="text" id="query" placeholder="Search the brain..." onkeydown="if(event.key==='Enter') search()">
   <button onclick="search()">Search</button>
   <button onclick="browseAll()" style="background:#1f6feb;">Browse All</button>
+  <button onclick="renderGraph()" style="background:#f0883e;">Grafo</button>
 </div>
 
 <div class="layers">
@@ -68,6 +71,61 @@ const API_BASE = location.origin;
 document.getElementById('brain-url').textContent = API_BASE;
 
 let currentLayer = '';
+
+// Mapa de constelações do acervo (viewer-graph SPEC §7 — vinculante):
+// fundo Noite #0d1117, labels Papel #c9d1d9 11px sistema, aresta wikilink
+// sólida Link #58a6ff, aresta project trilha pontilhada Trilha #3fb950
+// (dash 4/3), hub projeto quadrado Guia #f0883e 6px, nota círculo 3px,
+// órfã círculo vazado Órfã #484f58, anel fino = camada (só hex da paleta;
+// estudos/indexacao usam Órfã como fallback documentado em graphLayerRing).
+// Física própria O(n2): repulsão + molas + gravidade central, pan/zoom por
+// transform, hit-test por distância. Deriva lenta 0.2x após assentar;
+// congela após GRAPH_FROZEN_TICKS se nós > GRAPH_FROZEN_AT (RF-12);
+// estático sob prefers-reduced-motion. Sem deps, sem webfont, sem gradiente.
+const GRAPH_FROZEN_AT = 1500;
+const GRAPH_SETTLE_TICKS = 250;
+const GRAPH_FROZEN_TICKS = 300;
+
+let graphRaf = 0;
+let graphFilter = '';
+let graphNodes = [];
+let graphEdges = [];
+let graphTick = 0;
+let graphFrozen = false;
+let graphHover = -1;
+let graphSelected = -1;
+let graphPX = [];
+let graphPY = [];
+let graphVX = [];
+let graphVY = [];
+let graphDeg = [];
+let graphHub = [];
+let graphPanX = 0;
+let graphPanY = 0;
+let graphZoomK = 1;
+
+function graphFilterChanged() {
+  graphFilter = document.getElementById('graph-filter').value;
+  renderGraph();
+}
+
+function graphLayerRing(layer) {
+  if (layer === 'arquitetura') return '#58a6ff';
+  if (layer === 'regras') return '#3fb950';
+  if (layer === 'sessoes') return '#f0883e';
+  if (layer === 'projetos') return '#c9d1d9';
+  // Fallback intencional, não esquecimento: `estudos` e `indexacao` caem em
+  // Órfã #484f58 porque a paleta (§7) é fechada em 6 hex e Noite #0d1117 é
+  // invisível sobre o fundo. Sem colisão semântica com nó órfão: órfã é
+  // círculo VAZADO sem anel (raio 3), camada-fallback é anel (raio 5) sobre
+  // círculo preenchido. Sem cor nova por SPEC §7; se estudos/indexacao
+  // ganharem volume, candidata a 7º hex vai para a SPEC, não para o código.
+  return '#484f58';
+}
+
+function stopGraph() {
+  if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
+}
 
 async function checkStatus() {
   const statusEl = document.getElementById('status');
@@ -113,6 +171,7 @@ async function checkStatus() {
 }
 
 async function browseAll() {
+  stopGraph();
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '<div class="loading">⏳ Loading notes...</div>';
 
@@ -177,6 +236,7 @@ async function browseAll() {
 }
 
 async function readNote(path) {
+  stopGraph();
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '<div class="loading">⏳ Reading...</div>';
 
@@ -232,6 +292,7 @@ function setLayer(btn, layer) {
 }
 
 async function search() {
+  stopGraph();
   const query = document.getElementById('query').value.trim();
   if (!query) return;
 
@@ -274,7 +335,310 @@ async function search() {
 function escapeHtml(text) {
   const d = document.createElement('div');
   d.textContent = text;
-  return d.innerHTML;
+  // textContent→innerHTML escapa & < > mas NÃO aspas: serialização de nó de
+  // texto não escapa `"` (só faria sentido em atributo). O dropdown do grafo
+  // interpola em value="…", então `"` quebraria o atributo (projeto com `"`
+  // no nome injetaria markup). Escapar aqui é seguro nos dois contextos:
+  // em texto `&quot;` renderiza como `"`, em atributo volta a `"` no parse.
+  // split/join em vez de replace(/"/g,…): o guard de wiring do viewer faz
+  // lex do JS sem entender regex, e a `"` dentro de /"/ abriria string que
+  // nunca fecha (apagaria `renderGraph` da visão do teste).
+  return d.innerHTML.split('"').join('&quot;');
+}
+
+async function renderGraph() {
+  stopGraph();
+  const resultsEl = document.getElementById('results');
+  resultsEl.innerHTML =
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">' +
+    '<label for="graph-filter" style="font-size:13px;color:#8b949e;">Projeto</label>' +
+    '<select id="graph-filter" onchange="graphFilterChanged()" style="padding:6px 10px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:13px;"><option value="">todos</option></select>' +
+    '<span id="graph-count" style="font-size:12px;color:#8b949e;">a carregar grafo…</span>' +
+    '</div>' +
+    '<canvas id="graph-canvas" title="grafo do acervo" style="width:100%;height:520px;border:1px solid #30363d;border-radius:8px;background:#0d1117;cursor:grab;"></canvas>' +
+    '<div style="font-size:12px;color:#484f58;margin-top:8px;">arrastar = pan · roda = zoom · clique num ponto = ler nota · clique num quadrado = filtrar projeto</div>';
+  const countEl = document.getElementById('graph-count');
+  const cv = document.getElementById('graph-canvas');
+  const ctx = cv.getContext('2d');
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches === true;
+  let resp;
+  try {
+    resp = await fetch(`${API_BASE}/api/graph?project=` + encodeURIComponent(graphFilter), { signal: AbortSignal.timeout(3000) });
+  } catch (err) {
+    countEl.textContent = 'grafo indisponível: ' + err.message;
+    return;
+  }
+  const data = await resp.json();
+  if (data.error) {
+    countEl.textContent = 'erro no grafo: ' + data.error;
+    return;
+  }
+  const nodes = data.nodes;
+  const edges = data.edges;
+  const dangling = data.dangling;
+  const projects = data.projects;
+  graphNodes = nodes;
+  graphEdges = edges;
+  let opts = '<option value="">todos</option>';
+  for (const p of projects) {
+    const sel = p === graphFilter ? ' selected' : '';
+    opts += '<option value="' + escapeHtml(p) + '"' + sel + '>' + escapeHtml(p) + '</option>';
+  }
+  document.getElementById('graph-filter').innerHTML = opts;
+  const n = nodes.length;
+  const idx = {};
+  graphPX = [];
+  graphPY = [];
+  graphVX = [];
+  graphVY = [];
+  graphDeg = [];
+  graphHub = [];
+  for (let i = 0; i < n; i++) {
+    const nd = nodes[i];
+    idx[nd.id] = i;
+    graphPX[i] = (Math.random() - 0.5) * 600;
+    graphPY[i] = (Math.random() - 0.5) * 600;
+    graphVX[i] = 0;
+    graphVY[i] = 0;
+    graphDeg[i] = 0;
+    graphHub[i] = false;
+  }
+  for (const e of edges) {
+    const a = idx[e.from];
+    const b = idx[e.to];
+    if (a === undefined || b === undefined) continue;
+    graphDeg[a] += 1;
+    graphDeg[b] += 1;
+  }
+  for (let t = 0; t < 5; t++) {
+    let best = -1;
+    for (let i = 0; i < n; i++) {
+      if (graphHub[i]) continue;
+      if (nodes[i].kind !== 'note') continue;
+      if (best < 0 || graphDeg[i] > graphDeg[best]) best = i;
+    }
+    if (best < 0) break;
+    graphHub[best] = true;
+  }
+  graphTick = 0;
+  graphFrozen = false;
+  graphHover = -1;
+  graphSelected = -1;
+  graphPanX = 0;
+  graphPanY = 0;
+  graphZoomK = 1;
+  const frozenAt = n > GRAPH_FROZEN_AT;
+  const maxTicks = frozenAt ? GRAPH_FROZEN_TICKS : GRAPH_SETTLE_TICKS;
+  let tipShown = '';
+  let dragX = 0;
+  let dragY = 0;
+  let dragging = false;
+  let moved = 0;
+  function physics(mul) {
+    for (let i = 0; i < n; i++) {
+      let fx = -graphPX[i] * 0.01 * mul;
+      let fy = -graphPY[i] * 0.01 * mul;
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const dx = graphPX[i] - graphPX[j];
+        const dy = graphPY[i] - graphPY[j];
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) d2 = 1;
+        const d = Math.sqrt(d2);
+        const f = 900 * mul / d2;
+        fx += dx / d * f;
+        fy += dy / d * f;
+      }
+      graphVX[i] = (graphVX[i] + fx) * 0.85;
+      graphVY[i] = (graphVY[i] + fy) * 0.85;
+    }
+    for (const e of edges) {
+      const a = idx[e.from];
+      const b = idx[e.to];
+      if (a === undefined || b === undefined) continue;
+      const dx = graphPX[b] - graphPX[a];
+      const dy = graphPY[b] - graphPY[a];
+      const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      const f = (d - 90) * 0.02 * mul;
+      graphVX[a] += dx / d * f;
+      graphVY[a] += dy / d * f;
+      graphVX[b] -= dx / d * f;
+      graphVY[b] -= dy / d * f;
+    }
+    for (let i = 0; i < n; i++) {
+      graphPX[i] += graphVX[i];
+      graphPY[i] += graphVY[i];
+    }
+  }
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth || 800;
+    const h = 520;
+    if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
+    if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    for (const e of edges) {
+      const a = idx[e.from];
+      const b = idx[e.to];
+      if (a === undefined || b === undefined) continue;
+      const x1 = (graphPX[a] + graphPanX) * graphZoomK + w / 2;
+      const y1 = (graphPY[a] + graphPanY) * graphZoomK + h / 2;
+      const x2 = (graphPX[b] + graphPanX) * graphZoomK + w / 2;
+      const y2 = (graphPY[b] + graphPanY) * graphZoomK + h / 2;
+      if (e.kind === 'project') {
+        ctx.strokeStyle = 'rgba(63, 185, 80, 0.35)';
+        ctx.setLineDash([4, 3]);
+      } else {
+        ctx.strokeStyle = 'rgba(88, 166, 255, 0.35)';
+        ctx.setLineDash([]);
+      }
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    let vis = 0;
+    for (let i = 0; i < n; i++) {
+      const nd = nodes[i];
+      const x = (graphPX[i] + graphPanX) * graphZoomK + w / 2;
+      const y = (graphPY[i] + graphPanY) * graphZoomK + h / 2;
+      if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue;
+      vis++;
+      const isHub = nd.kind !== 'note';
+      const orphan = !isHub && graphDeg[i] === 0;
+      const sel = i === graphSelected || i === graphHover;
+      if (isHub) {
+        ctx.fillStyle = '#f0883e';
+        ctx.fillRect(x - 3, y - 3, 6, 6);
+      } else if (orphan) {
+        ctx.strokeStyle = '#484f58';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 6.2832);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = '#c9d1d9';
+        ctx.beginPath();
+        ctx.arc(x, y, sel ? 4 : 3, 0, 6.2832);
+        ctx.fill();
+        ctx.strokeStyle = graphLayerRing(nd.layer);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, 6.2832);
+        ctx.stroke();
+      }
+      const showLabel = isHub || graphHub[i] || sel || graphZoomK > 1.5;
+      if (showLabel) {
+        ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+        ctx.fillStyle = '#c9d1d9';
+        ctx.fillText(nd.label, x + 8, y + 4);
+      }
+    }
+    const state = graphFrozen ? 'layout congelado' : 'simulando';
+    let txt = n + ' nós · ' + state;
+    if (graphZoomK !== 1) txt = vis + '/' + n + ' visíveis · ' + state;
+    txt += ' · ' + dangling + ' dangling';
+    if (graphFilter !== '') txt += ' · ' + graphFilter;
+    countEl.textContent = txt;
+  }
+  function fullTip(nd) {
+    if (nd.kind === 'project') return nd.id;
+    return nd.id + ' · ' + nd.layer;
+  }
+  function pick(ev) {
+    const rect = cv.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+    const w = rect.width;
+    const h = rect.height;
+    let best = -1;
+    let bestD = 144;
+    for (let i = 0; i < n; i++) {
+      const x = (graphPX[i] + graphPanX) * graphZoomK + w / 2;
+      const y = (graphPY[i] + graphPanY) * graphZoomK + h / 2;
+      const dx = mx - x;
+      const dy = my - y;
+      const d = dx * dx + dy * dy;
+      const rr = nodes[i].kind === 'note' ? 9 : 12;
+      if (d < rr * rr && (best < 0 || d < bestD)) { best = i; bestD = d; }
+    }
+    return best;
+  }
+  function clickNode(i) {
+    const nd = nodes[i];
+    graphSelected = i;
+    if (nd.kind === 'project') {
+      graphFilter = nd.label;
+      renderGraph();
+    } else {
+      draw();
+      readNote(nd.id);
+    }
+  }
+  function frame() {
+    if (graphTick < maxTicks) {
+      physics(1);
+    } else if (!frozenAt) {
+      physics(0.2);
+    } else {
+      graphFrozen = true;
+      draw();
+      graphRaf = 0;
+      return;
+    }
+    graphTick++;
+    draw();
+    graphRaf = requestAnimationFrame(frame);
+  }
+  cv.onmousedown = function (ev) {
+    dragX = ev.clientX;
+    dragY = ev.clientY;
+    dragging = true;
+    moved = 0;
+  };
+  cv.onmousemove = function (ev) {
+    if (dragging) {
+      const dx = ev.clientX - dragX;
+      const dy = ev.clientY - dragY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      graphPanX += dx / graphZoomK;
+      graphPanY += dy / graphZoomK;
+      dragX = ev.clientX;
+      dragY = ev.clientY;
+      draw();
+    } else {
+      const hit = pick(ev);
+      const tip = hit >= 0 ? fullTip(nodes[hit]) : '';
+      if (tip !== tipShown) {
+        tipShown = tip;
+        cv.title = tip === '' ? 'grafo do acervo' : tip;
+      }
+      if (hit !== graphHover) { graphHover = hit; draw(); }
+    }
+  };
+  cv.onmouseup = function (ev) {
+    dragging = false;
+    if (moved < 5) {
+      const hit = pick(ev);
+      if (hit >= 0) clickNode(hit);
+      else { graphSelected = -1; draw(); }
+    }
+  };
+  cv.onwheel = function (ev) {
+    ev.preventDefault();
+    const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+    graphZoomK = Math.min(4, Math.max(0.2, graphZoomK * f));
+    draw();
+  };
+  if (reduced) {
+    for (let s = 0; s < 30; s++) physics(1);
+    draw();
+  } else {
+    graphRaf = requestAnimationFrame(frame);
+  }
 }
 
 checkStatus();
