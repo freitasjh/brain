@@ -1,0 +1,49 @@
+# TASKS — viewer-graph (Fase 2, granularidade jira-microtask-breaker)
+
+Convenção: `VG-BE-*` backend (só `crates/brain-web/src/lib.rs` + `crates/brain-store` leitura), `VG-FE-*` frontend (só `viewer/index.html`), `VG-VAL-*` validação. Nenhuma task cruza BE×FE (layer isolation da skill). Estimativas 1-3h. Dono default: `developer-engineer`; VAL com `qa-engineer` como revisor. Zero TODO sem dono — todo item tem dono e aceite executável.
+
+Pré-condição de todas (H6, SPEC R-06): `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` + `.venv/bin/python -m pytest src/tests/ -q` (124+2 legadas, H1.4) + `cargo build --workspace` + `brain --help` smoke.
+
+## BE — endpoint (F1)
+
+- [x] `VG-BE-01` **FECHADO 2026-10-09 (C1 7fc3702): `graph_serves_nodes_edges_dangling_and_projects` verde — 5 nós/4 arestas/dangling 1 no fixture.** rota + formato (RF-01/RF-02, R-01/R-07) · 2h · risco **B** · dono `developer-engineer`
+  Aceite: `GET /api/graph` em DB scratch serve `{nodes:[],edges:[],dangling:N≥0,projects:[]}` (HTTP 200); nó `{id,kind,layer,label}`, aresta `{from,to,kind}`; `Store::open` por request (`lib.rs:96` padrão), falha → `{"error"}` sem `unwrap`; teste: payload tem as 4 chaves + kinds só `note|project` / `wikilink|project`.
+- [x] `VG-BE-02` **FECHADO 2026-10-09 (C1 7fc3702): `graph_filter_keeps_owned_and_linked_drops_other_project` verde — só-posse ✓ + só-link ✓ + outro-projeto ✗ + subgrafo induzido.** filtro owned∪linked na query (RF-03) · 3h · risco **A** · dono `developer-engineer`
+  Aceite: `?project=X` = (`notes.project_id=X`) ∪ (`note_projects` p/ X, `lib.rs:1009-1010`) ∪ (`projeto:X`); arestas só com 2 pontas no conjunto (subgrafo induzido); predicado na query, não pós-filtro (lição `lib.rs:1682-1691,1779`); teste: nota só-posse ✓ + nota só-link ✓ + nota de outro projeto ✗.
+- [x] `VG-BE-03` **FECHADO 2026-10-09 (C1 7fc3702): `graph_dangling_is_pruned_and_counted` verde — dangling 1, zero nó/aresta fantasma.** dangling podado+contado (RF-05) · 2h · risco **M** · dono `developer-engineer`
+  Aceite: `links.to_path` sem row em `notes` (sem FK, `lib.rs:927-932`) não gera nó/aresta, incrementa `dangling`; teste: fixture com 1 dangling (corpus real tem 1: EXPLORATION §3) → `dangling:1`, nenhum nó com esse id, nenhum clique para `{"error":"not found"}` (`lib.rs:129`).
+- [x] `VG-BE-04` **FECHADO 2026-10-09 (C1 7fc3702): `graph_project_hubs_do_not_collide_with_note_paths` + `graph_has_no_cap_over_a_thousand_notes` (1052 nós, zero órfãs) + guard `graph_snapshot_queries_are_uncapped` verdes.** `projects:[]` + ids `projeto:` + query sem LIMIT (RF-07/RF-02/RF-06) · 2h · risco **M** · dono `developer-engineer`
+  Aceite: `projects` vem de `project_list` (`lib.rs:988`); id projeto `projeto:<nome>`, id nota = `notes.path` verbatim (casa `lib.rs:127`); 4 queries agregadas, zero N+1, sem `LIMIT`, sem reusar `recent_paths(1000)` (`lib.rs:1663-1667`); teste: `projeto:X` sem colisão com nota; corpus >cap hipotético (seed 1001 notas scratch) → grafo completo, zero aresta órfã.
+- [x] `VG-BE-05` **FECHADO 2026-10-09 (C1 7fc3702): `graph_unknown_project_is_empty_not_an_error` verde — vazio 200 com dropdown completo.** inexistente→vazio honesto (RF-04) · 1h · risco **B** · dono `developer-engineer`
+  Aceite: `?project=<sem row em projects>` → `{nodes:[],edges:[],dangling:0,projects:[…]}` HTTP 200, sem `{"error"}` (convenção search, SPEC §2); ausência de filtro = grafo completo; teste: os dois casos.
+
+## FE — viewer (F2)
+
+- [x] `VG-FE-01` **FECHADO 2026-10-09 (C2 be9fb79 + guard C3 dbc1969): 4ª view + `renderGraph()` canvas próprio sem deps; `viewer_graph_reads_only_fields…` encontra a função e valida reads.** aba + `renderGraph()` canvas (RF-08, ADR-01) · 3h · risco **M** · dono `developer-engineer`
+  Aceite: 4ª view ao lado de search/browse (`index.html:43-55`); `renderGraph()` + canvas force-directed próprio, `requestAnimationFrame`, pan/zoom por transform, hit-test por distância; sem deps/build/CDN (frontend-rules No-SPA); teste: olho + `viewer_fn(src,"renderGraph")` (`lib.rs:592-604`) encontra a função.
+- [x] `VG-FE-02` **FECHADO 2026-10-09 (C3 dbc1969): `viewer_graph_click_hands_the_read_endpoint_a_resolvable_id` verde — id verbatim (ban slice/split/replace/replaceAll/substr/substring) + hub filtra via `label`.** clique→readNote verbatim (RF-09) · 2h · risco **A** · dono `developer-engineer`
+  Aceite: clique nó-nota chama `readNote(id)` existente (`index.html:179-226`) com id verbatim; clique `projeto:X` aplica filtro RF-03; zero `slice/split/replace/substr/substring` no argumento (guard `lib.rs:825`); teste: guard estático + `note_get(p)` resolve p/ toda entry servida (padrão `lib.rs:801-850`).
+- [x] `VG-FE-03` **FECHADO 2026-10-09 (C2 be9fb79): dropdown de `projects:[]` + "todos", label = último segmento, tooltip = path cheio (SPEC §7/RF-11), paleta §UX.** dropdown + labels + paleta §UX (RF-10/RF-11, SPEC §7) · 2h · risco **M** · dono `developer-engineer`
+  Aceite: dropdown de `projects:[]` + "todos", troca refaz `fetch(/api/graph?project=)`; label = último segmento, `title` = path cheio; cores `Link #58a6ff` / `Trilha #3fb950` dash 4/3 / `Guia #f0883e` quadrado / `Órfã #484f58` vazado; labels via `escapeHtml` (`index.html:274-278`); teste: typo impossível (sem digitação livre) + tooltip = path cheio.
+- [x] `VG-FE-04` **FECHADO 2026-10-09 (C2 be9fb79): freeze >1500 com anúncio visível + deriva 0.2× + `prefers-reduced-motion` estático.** congelamento >1500 + deriva (RF-12, tese §UX) · 2h · risco **B** · dono `developer-engineer`
+  Aceite: nós >1500 → layout congela após N ticks (estático + pan/zoom); contador visível ("532 nós · simulando" vs "… · layout congelado"); deriva lenta 0.2× abaixo do teto, `prefers-reduced-motion` → estático; teste: seed 1600 nós scratch → banner de congelado presente.
+
+## VAL — guards, testes, mutações, E2E (F3/F4)
+
+- [x] `VG-VAL-01` **FECHADO 2026-10-09 (C3 dbc1969): `viewer_graph_reads_only_fields_the_graph_endpoint_serves` verde incl. `JS_MEMBERS` + `replaceAll`.** guard (a) phantom-reads p/ graph (RF-13a) · 2h · risco **A** · dono `developer-engineer`, revisor `qa-engineer`
+  Aceite: `viewer_graph_reads_only_fields_the_graph_endpoint_serves` via `assert_no_phantom_reads` (`lib.rs:566-583`) com payload real do handler; `JS_MEMBERS`/`JS_ROOTS` (`lib.rs:462-473`) estendidos só com DOM reais do canvas (`getContext`, `requestAnimationFrame` via `window`); aceite negativo: leitura de campo inexistente falha.
+- [x] `VG-VAL-02` **FECHADO 2026-10-09 (C3 dbc1969): `viewer_graph_click_hands_the_read_endpoint_a_resolvable_id` verde (estática + `note_get` comportamental).** guard (b) clique-resolvível (RF-13b) · 2h · risco **A** · dono `developer-engineer`, revisor `qa-engineer`
+  Aceite: metade estática anti-`slice/split/replace` + metade comportamental `note_get` (padrão `lib.rs:801-850`); todo `from/to` de aresta `wikilink` resolve em `notes`, todo `to` de aresta `project` é `projeto:<nome em projects>`.
+- [x] `VG-VAL-03` **FECHADO 2026-10-09 (C1 7fc3702 + C3 dbc1969): 5 handler tests + `assert_graph_wiring` + guards `graph_snapshot_queries…` e `graph_handler_fails_honest…` — `cargo test -p brain-web` 20/0, workspace 484/0.** handler tests 5 casos (RF-14 handler) · 3h · risco **A** · dono `developer-engineer`
+  Aceite (cada um é um `#[test]` em `mod tests`, `lib.rs:203-944`, in-mem + handler real): (1) owned∪linked — só-posse e só-link aparecem, outro-projeto não; (2) inexistente → vazio 200; (3) dangling podado e contado; (4) `projeto:` sem colisão; (5) sem-LIMIT — seed >1000 notas, grafo completo sem órfãs. Comando: `cargo test -p brain-web graph`.
+- [x] `VG-VAL-04` 4 mutações RF-14 (uma por mutação, padrão `.spec/brain-help-visual/SPEC.md §8` citado na SPEC) · 2h · risco **M** · dono `qa-engineer`
+  Aceite: aplicar a mutação → teste correspondente falha (mínimo 1 falha cada): M1 remover `dangling` do payload → VG-VAL-03(3) falha; M2 remover `projects` → VG-VAL-01 falha (dropdown lê campo não-servido); M3 `renderGraph` ler campo inexistente → VG-VAL-01 falha; M4 filtro só-posse (dropar `UNION note_projects`) → VG-VAL-03(1) falha no caso só-link. Reverter após verificar.
+  **F3a VERIFICADO 2026-10-09 (mutar→rodar→reverter, tudo revertido): M1 5 falhas (dangling, unknown-project, shape, filter, wiring-phantom), M2 3 falhas (unknown, shape, wiring-phantom `projects`), M3 1 falha (wiring-phantom `campo_que_nao_existe`), M4 1 falha (filter só-link, lib.rs:1154).**
+- [x] `VG-VAL-05` E2E H3 scratch + portões + delta docs (R-06, SPEC §6/E5) · 2h · risco **M** · dono `developer-engineer`
+  Aceite: scratch DB novo + portas efêmeras (nunca `data/brain.db`, nunca 8321/8322 — H3.1); `BRAIN_OLLAMA_URL=http://127.0.0.1:1` morto (nunca `env_remove` — H2.3, default real `lib.rs:23` de brain-embed); 12-step H3 passa incl. `curl /api/graph` + `?project=`; H6 8 itens + clippy + pytest + help; Delta: AGENTS.md +1 linha endpoint, frontend-rules +1 parágrafo, `VERIFY.md` com E5 (clusters por projeto, clique→leitura, filtro dropdown, badge inalterado, dangling = contador).
+  **F3a EXECUTADO 2026-10-09: scratch /tmp/tmp.ld6DEhmnzK/brain.db, VP 33467/MP 33791 (anúncio pós-bind ok), 12/12 + 12b SSE stream ok; grafo: full 5 nós/3 arestas/dangling 1, filtro h3proj subgrafo induzido 3 nós, inexistente vazio 200, HTML com view Grafo (13 refs). Produção intacta (8321/8322 ouvindo, data/brain.db sem toque). PENDENTE (não-F3a): Delta docs (AGENTS.md + frontend-rules) + VERIFY.md E5 — ficam para o batch de fechamento.**
+
+## Riscos por item (resumo)
+
+A (bloqueia merge se falhar): VG-BE-02, VG-FE-02, VG-VAL-01/02/03. M: VG-BE-03/04, VG-FE-01/03, VG-VAL-04/05. B: VG-BE-01/05, VG-FE-04.
+Maior risco herdado: EXPLORATION R1 — 12 wikilinks / 522 notas, conectividade v1 vem de `note_projects` (110); calibrar E5 como "grafo de projetos com overlay", não rede densa.
