@@ -21,6 +21,7 @@ pub fn router(db: String) -> Router {
         .route("/api/search", get(search))
         .route("/api/read", get(read))
         .route("/api/list", get(list))
+        .route("/api/graph", get(graph))
         .fallback_service(serve_dir)
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -198,6 +199,77 @@ async fn list(State(s): State<AppState>) -> Json<serde_json::Value> {
         })
     }).collect::<Vec<_>>();
     Json(serde_json::json!({ "entries": entries }))
+}
+
+#[derive(Deserialize)]
+pub struct GraphQ { project: Option<String> }
+
+/// Display label of a graph node: the last path segment (RF-11). The full
+/// path stays in `id` verbatim, so the viewer can still show it as a tooltip
+/// and hand it to `/api/read` unchanged.
+fn graph_label(path: &str) -> &str {
+    match path.rsplit('/').next() {
+        Some(seg) if !seg.is_empty() => seg,
+        _ => path,
+    }
+}
+
+/// `GET /api/graph?project=` — project-aware note graph (viewer-graph RF-01..RF-07).
+///
+/// Read-only like the other four handlers: one `Store` per request, no embed,
+/// no write. Nodes are notes (`id` = `notes.path` verbatim, the same identity
+/// `/api/read` matches) plus `projeto:<nome>` hubs; edges are wikilinks plus
+/// note→project memberships. A wikilink whose target has no row in `notes` is
+/// pruned and counted in `dangling` (RF-05) instead of becoming a clickable
+/// node that would resolve to `{"error":"not found"}`.
+///
+/// R-01/R-07: every fallible step degrades to the shared `{"error"}` envelope
+/// — an unknown project name is the one exception, and it is a name rather
+/// than a failure, so it serves the honest empty graph with HTTP 200 (RF-04).
+#[debug_handler]
+async fn graph(State(s): State<AppState>, Query(q): Query<GraphQ>) -> Json<serde_json::Value> {
+    let st = match brain_store::Store::open(&s.db) { Ok(v) => v, Err(e) => return Json(serde_json::json!({"error": e.to_string()})) };
+    // The dropdown's "todos" arrives as absent or blank — both mean unfiltered.
+    let project: Option<String> = q.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    let snap = match st.graph_snapshot(project.as_deref()) { Ok(v) => v, Err(e) => return Json(serde_json::json!({"error": format!("graph_snapshot: {e}")})) };
+    let members: std::collections::HashSet<&str> = snap.notes.iter().map(|(p, _)| p.as_str()).collect();
+    let mut nodes: Vec<serde_json::Value> = snap.notes.iter().map(|(p, l)| {
+        serde_json::json!({"id": p, "kind": "note", "label": graph_label(p), "layer": l})
+    }).collect();
+    // Hubs: every project unfiltered (522 notes + 8 hubs on the live corpus),
+    // only the named one under a filter that resolved to a real project.
+    if let Some(name) = project.as_deref() {
+        if snap.projects.iter().any(|n| n == name) {
+            nodes.push(serde_json::json!({"id": format!("projeto:{name}"), "kind": "project", "label": name, "layer": serde_json::Value::Null}));
+        }
+    } else {
+        for n in &snap.projects {
+            nodes.push(serde_json::json!({"id": format!("projeto:{n}"), "kind": "project", "label": n, "layer": serde_json::Value::Null}));
+        }
+    }
+    let ids: std::collections::HashSet<&str> = nodes.iter().filter_map(|v| v["id"].as_str()).collect();
+    let mut edges: Vec<serde_json::Value> = Vec::new();
+    let mut dangling: i64 = 0;
+    for (from, to, to_missing) in &snap.links {
+        // Induced subgraph (ADR-03): a wikilink only exists with both ends in
+        // the served node set, so cross-project links hide instead of hanging.
+        if !members.contains(from.as_str()) { continue; }
+        // Pruned and counted (RF-05): the target was never a note.
+        if *to_missing { dangling += 1; continue; }
+        if !members.contains(to.as_str()) { continue; }
+        edges.push(serde_json::json!({"from": from, "to": to, "kind": "wikilink"}));
+    }
+    for (note_path, proj_name) in &snap.memberships {
+        if !members.contains(note_path.as_str()) { continue; }
+        let target = format!("projeto:{proj_name}");
+        // Memberships are scoped to the served hubs, so this guard is dead code
+        // on a healthy join — it exists so a join skew can never orphan an edge.
+        if !ids.contains(target.as_str()) { continue; }
+        edges.push(serde_json::json!({"from": note_path, "to": target, "kind": "project"}));
+    }
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    edges.sort_by(|a, b| (a["from"].as_str(), a["to"].as_str(), a["kind"].as_str()).cmp(&(b["from"].as_str(), b["to"].as_str(), b["kind"].as_str())));
+    Json(serde_json::json!({"nodes": nodes, "edges": edges, "dangling": dangling, "projects": snap.projects}))
 }
 
 #[cfg(test)]
@@ -940,5 +1012,265 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let resp = rt.block_on(async { serve_index().await.into_response() });
         assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    // ------------------------------------------------------------------
+    // /api/graph (viewer-graph, batch F1: VG-BE-01..05 + endpoint-side half
+    // of RF-13). Requests go through the real router via `oneshot`, so a
+    // missing route registration fails here as a 404 rather than passing
+    // against a handler called directly.
+    // ------------------------------------------------------------------
+
+    async fn graph_get_once(db: &str, project: Option<&str>) -> (axum::http::StatusCode, serde_json::Value) {
+        use tower::ServiceExt as _;
+        let app = router(db.to_string());
+        let uri = match project {
+            Some(p) => format!("/api/graph?project={p}"),
+            None => "/api/graph".to_string(),
+        };
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn graph_get(db: &str, project: Option<&str>) -> (axum::http::StatusCode, serde_json::Value) {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(graph_get_once(db, project))
+    }
+
+    /// Two projects, one owned note, one linked-only note, one foreign note,
+    /// one internal wikilink and one dangling wikilink — the minimal shape
+    /// every filter/dangling test below needs.
+    fn seed_graph(db: &str) {
+        let s = brain_store::Store::open(db).unwrap();
+        let a = s.project_create("proj-a", "").unwrap();
+        let b = s.project_create("proj-b", "").unwrap();
+        s.note_upsert("regras/global/owned-a", "regras", Some("global"), "## owned a", Some(a.id), &[], false, None).unwrap();
+        s.note_upsert("regras/global/linked-a", "regras", Some("global"), "## linked a", None, &[], false, None).unwrap();
+        s.note_link_project("regras/global/linked-a", "proj-a").unwrap();
+        s.note_upsert("regras/global/owned-b", "regras", Some("global"), "## owned b", Some(b.id), &[], false, None).unwrap();
+        // Internal wikilink (owned-a → linked-a) plus one dangling target.
+        s.note_upsert("regras/global/owned-a", "regras", Some("global"), "## owned a\n\nSee [[regras/global/linked-a]]", Some(a.id), &[], false, None).unwrap();
+        s.note_upsert("regras/global/owned-b", "regras", Some("global"), "## owned b\n\nSee [[regras/global/ghost]]", Some(b.id), &[], false, None).unwrap();
+    }
+
+    /// Endpoint-side half of RF-13(b): every served id resolves the way a
+    /// click would resolve it — note nodes via `note_get` (the exact lookup
+    /// `/api/read` performs), hubs via the `projeto:` prefix against
+    /// `project_list`, and no edge pointing off the served node set.
+    fn assert_graph_wiring(payload: &serde_json::Value, db: &str, what: &str) {
+        let s = brain_store::Store::open(db).unwrap();
+        let projects: Vec<String> = s.project_list().unwrap().into_iter().map(|p| p.name).collect();
+        let nodes = payload["nodes"].as_array().unwrap();
+        let edges = payload["edges"].as_array().unwrap();
+        for n in nodes {
+            match n["kind"].as_str().unwrap() {
+                "note" => assert!(
+                    s.note_get(n["id"].as_str().unwrap()).unwrap().is_some(),
+                    "{what}: node `{}` is not resolvable via /api/read — every click on it would 404", n["id"]
+                ),
+                "project" => {
+                    let id = n["id"].as_str().unwrap();
+                    let name = id.strip_prefix("projeto:").unwrap_or("");
+                    assert!(projects.iter().any(|p| p == name), "{what}: hub `{id}` names no known project");
+                }
+                k => panic!("{what}: unknown node kind `{k}`"),
+            }
+        }
+        for e in edges {
+            let (from, to) = (e["from"].as_str().unwrap(), e["to"].as_str().unwrap());
+            assert!(
+                nodes.iter().any(|n| n["id"] == from) && nodes.iter().any(|n| n["id"] == to),
+                "{what}: edge {from}->{to} dangles off the served node set"
+            );
+            match e["kind"].as_str().unwrap() {
+                "wikilink" => assert!(
+                    s.note_get(from).unwrap().is_some() && s.note_get(to).unwrap().is_some(),
+                    "{what}: wikilink {from}->{to} does not resolve on both ends"
+                ),
+                "project" => assert!(
+                    to.starts_with("projeto:") && projects.iter().any(|p| *p == to["projeto:".len()..]),
+                    "{what}: project edge points at `{to}`, not a served hub"
+                ),
+                k => panic!("{what}: unknown edge kind `{k}`"),
+            }
+        }
+    }
+
+    /// VG-BE-01 (RF-01/RF-02): shape, vocabularies, counts on the fixture.
+    #[test]
+    fn graph_serves_nodes_edges_dangling_and_projects() {
+        let db = tmp_db("graph-shape");
+        seed_graph(&db);
+        let (status, v) = graph_get(&db, None);
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let nodes = v["nodes"].as_array().unwrap();
+        let edges = v["edges"].as_array().unwrap();
+        assert!(v.get("dangling").and_then(|d| d.as_i64()).is_some(), "dangling must be an integer, always present: {v}");
+        assert!(v["projects"].as_array().is_some(), "projects must always be present: {v}");
+        let projs: Vec<&str> = v["projects"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+        assert_eq!(projs, vec!["proj-a", "proj-b"]);
+        for n in nodes {
+            for k in ["id", "kind", "label", "layer"] {
+                assert!(n.get(k).is_some(), "node missing `{k}`: {n}");
+            }
+            assert!(n["kind"] == "note" || n["kind"] == "project", "kind out of vocabulary: {n}");
+        }
+        for e in edges {
+            for k in ["from", "to", "kind"] {
+                assert!(e.get(k).is_some(), "edge missing `{k}`: {e}");
+            }
+            assert!(e["kind"] == "wikilink" || e["kind"] == "project", "kind out of vocabulary: {e}");
+        }
+        // 3 notes + 2 hubs; 1 wikilink + 3 memberships served, 1 pruned.
+        assert_eq!(nodes.len(), 5, "got {v}");
+        assert_eq!(edges.len(), 4, "got {v}");
+        assert_eq!(v["dangling"], 1, "got {v}");
+        assert_graph_wiring(&v, &db, "unfiltered graph");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// VG-BE-02 (RF-03): the filter is owned ∪ linked computed in SQL, and the
+    /// subgraph is induced — foreign notes, hubs and edges stay out.
+    #[test]
+    fn graph_filter_keeps_owned_and_linked_drops_other_project() {
+        let db = tmp_db("graph-filter");
+        seed_graph(&db);
+        let (status, v) = graph_get(&db, Some("proj-a"));
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let ids: Vec<&str> = v["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"regras/global/owned-a"), "owned note must appear: {v}");
+        assert!(ids.contains(&"regras/global/linked-a"), "linked-only note must appear: {v}");
+        assert!(ids.contains(&"projeto:proj-a"), "hub must appear: {v}");
+        assert!(!ids.contains(&"regras/global/owned-b"), "foreign note must not appear: {v}");
+        assert!(!ids.contains(&"projeto:proj-b"), "foreign hub must not appear: {v}");
+        let edges = v["edges"].as_array().unwrap();
+        assert!(
+            edges.iter().any(|e| e["from"] == "regras/global/owned-a" && e["to"] == "regras/global/linked-a" && e["kind"] == "wikilink"),
+            "internal wikilink must survive: {v}"
+        );
+        assert_eq!(v["dangling"], 0, "dangling of a filtered-out note must not leak into the count: {v}");
+        assert!(edges.iter().all(|e| e["to"] != "projeto:proj-b"), "no edge may point at the foreign hub: {v}");
+        assert_graph_wiring(&v, &db, "proj-a subgraph");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// VG-BE-05 (RF-04): unknown project is a name, not a failure.
+    #[test]
+    fn graph_unknown_project_is_empty_not_an_error() {
+        let db = tmp_db("graph-unknown");
+        seed_graph(&db);
+        let (status, v) = graph_get(&db, Some("nope"));
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(v.get("error").is_none(), "unknown project is a name, not a failure: {v}");
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 0);
+        assert_eq!(v["edges"].as_array().unwrap().len(), 0);
+        assert_eq!(v["dangling"], 0);
+        assert_eq!(v["projects"].as_array().unwrap().len(), 2, "dropdown still served: {v}");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// VG-BE-03 (RF-05): dangling wikilinks prune to a counter, never to a node.
+    #[test]
+    fn graph_dangling_is_pruned_and_counted() {
+        let db = tmp_db("graph-dangling");
+        seed_graph(&db);
+        let (_, v) = graph_get(&db, None);
+        assert_eq!(v["dangling"], 1, "got {v}");
+        let ids: Vec<&str> = v["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap()).collect();
+        assert!(!ids.contains(&"regras/global/ghost"), "no phantom node: {v}");
+        assert!(
+            v["edges"].as_array().unwrap().iter().all(|e| e["from"] != "regras/global/ghost" && e["to"] != "regras/global/ghost"),
+            "no edge may reference the ghost: {v}"
+        );
+        assert_graph_wiring(&v, &db, "dangling graph");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// VG-BE-04 (RF-02/RF-07): hub ids cannot collide with note paths, and a
+    /// hub carries absence-of-layer as null rather than as a guess.
+    #[test]
+    fn graph_project_hubs_do_not_collide_with_note_paths() {
+        let db = tmp_db("graph-collision");
+        seed_graph(&db);
+        {
+            let s = brain_store::Store::open(&db).unwrap();
+            // A note whose path *contains* the hub prefix must still be a note.
+            s.note_upsert("regras/global/projeto:tricky", "regras", Some("global"), "## tricky", None, &[], false, None).unwrap();
+        }
+        let (_, v) = graph_get(&db, None);
+        let nodes = v["nodes"].as_array().unwrap();
+        let tricky = nodes.iter().find(|n| n["id"] == "regras/global/projeto:tricky").unwrap();
+        assert_eq!(tricky["kind"], "note");
+        assert_eq!(tricky["label"], "projeto:tricky", "label is the last segment: {tricky}");
+        let hub = nodes.iter().find(|n| n["id"] == "projeto:proj-a").unwrap();
+        assert_eq!(hub["kind"], "project");
+        assert!(hub.get("layer").is_some() && hub["layer"].is_null(), "hub has no layer — absence as null, not as guess: {hub}");
+        assert_graph_wiring(&v, &db, "collision graph");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// VG-BE-04 (RF-06): past the 1000-row browse cap the graph is still
+    /// complete, with zero orphaned edges.
+    #[test]
+    fn graph_has_no_cap_over_a_thousand_notes() {
+        let db = tmp_db("graph-nocap");
+        {
+            let s = brain_store::Store::open(&db).unwrap();
+            s.project_create("load", "").unwrap();
+            for i in 0..1050 {
+                let p = format!("sessoes/load/{i:04}");
+                s.note_upsert(&p, "sessoes", None, "## load", None, &[], false, None).unwrap();
+            }
+            s.note_upsert("sessoes/load/hub", "sessoes", None, "## hub\n\nSee [[sessoes/load/0000]]", None, &[], false, None).unwrap();
+            s.note_link_project("sessoes/load/hub", "load").unwrap();
+        }
+        let (status, v) = graph_get(&db, None);
+        assert_eq!(status, axum::http::StatusCode::OK);
+        // 1051 notes + 1 hub = every row, past the 1000 browse cap.
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 1052, "a capped query would serve fewer");
+        assert!(
+            v["edges"].as_array().unwrap().iter().any(|e| e["kind"] == "wikilink"),
+            "the wikilink must survive: {v}"
+        );
+        assert_graph_wiring(&v, &db, "uncapped graph");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// RF-06 as a source scan: `graph_snapshot` must not cap and must not reuse
+    /// the capped browse listing. A cap here draws edges toward nodes that were
+    /// never served — the exact failure RF-06 exists to close.
+    #[test]
+    fn graph_snapshot_queries_are_uncapped_and_cover_linked_notes() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-store/src/lib.rs");
+        let src = std::fs::read_to_string(&p).unwrap();
+        let start = src.find("pub fn graph_snapshot(").expect("graph_snapshot moved — update this guard");
+        let tail = &src[start..];
+        let end = tail.find("\n    pub fn ").unwrap_or(tail.len());
+        let body = &tail[..end];
+        assert!(!body.contains("LIMIT"), "graph_snapshot caps its queries — a capped graph orphans edges");
+        assert!(!body.contains("recent_paths"), "graph_snapshot must not reuse the capped browse listing (RF-06)");
+        assert!(body.contains("note_projects"), "graph_snapshot must union owned and linked notes in SQL (RF-03) — dropping the linked side blinds the filter");
+    }
+
+    /// R-07 as a source scan: the graph handler degrades to `{"error"}`,
+    /// never to a panic. The file's established `unwrap_or_default` shape stays
+    /// allowed; hard accessors do not.
+    #[test]
+    fn graph_handler_fails_honest_without_panicking_accessors() {        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let src = std::fs::read_to_string(&p).unwrap();
+        let start = src.find("async fn graph(").expect("graph handler moved — update this guard");
+        let tail = &src[start..];
+        let end = tail.find("\n}\n").expect("graph handler end not found");
+        let body = &tail[..end];
+        for banned in [".unwrap()", ".expect("] {
+            assert!(!body.contains(banned), "graph handler uses `{banned}` — degrade to an error envelope instead (R-07)");
+        }
+        assert!(body.contains("{\"error\""), "graph handler must keep the honest error envelope");
     }
 }

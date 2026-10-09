@@ -278,6 +278,26 @@ pub struct ChunkEmbeddingCounts {
     pub embedded: i64,
 }
 
+/// Read-only projection behind `GET /api/graph`, built by
+/// [`Store::graph_snapshot`]. Plain tuples, no bodies: the graph serves ids,
+/// labels and counts, never `content` (same posture as `/api/list`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GraphSnapshot {
+    /// `(path, layer)` of the notes in the subgraph: owned ∪ linked when
+    /// filtered, every TTL-live note otherwise. Never capped.
+    pub notes: Vec<(String, String)>,
+    /// Every `(from_path, to_path, to_missing)` row of `links`, where
+    /// `to_missing` is true when `to_path` has no row in `notes` at all
+    /// (RF-05 dangling — TTL ignored by design, see `graph_snapshot`).
+    pub links: Vec<(String, String, bool)>,
+    /// `(note_path, project_name)` edges to draw, already scoped to the
+    /// filter (single project) or the whole corpus. TTL-live notes only.
+    pub memberships: Vec<(String, String)>,
+    /// Every project name (`project_list`, `ORDER BY name`), always complete
+    /// — even an unknown filter still serves the dropdown (RF-07).
+    pub projects: Vec<String>,
+}
+
 /// Identity used for the cross-process embed lock, unique per process and per
 /// role (`brain:reindex:1234`, `brain:queue:1234`).
 ///
@@ -1034,6 +1054,67 @@ impl Store {
         let proj = self.project_get(project_name)?.ok_or_else(|| anyhow::anyhow!("project not found: {}", project_name))?;
         let n = self.conn.execute("DELETE FROM note_projects WHERE note_path=?1 AND project_id=?2", params![note_path, proj.id])?;
         Ok(n>0)
+    }
+
+    /// Graph snapshot for `GET /api/graph` (viewer-graph RF-03/RF-06).
+    ///
+    /// Four aggregated reads, zero N+1, and no cap anywhere: a capped query
+    /// here would draw edges toward nodes that were never served (RF-06 — the
+    /// reason `recent_paths(1000)` is not reused for the graph).
+    ///
+    /// * `notes` — `(path, layer)` in the subgraph: owned (`notes.project_id`)
+    ///   ∪ linked (`note_projects`) when `project` is `Some`, every TTL-live
+    ///   note otherwise. The union is a SQL predicate, not an in-memory
+    ///   post-filter — the blind-filter lesson from `fts_candidates`/`search`
+    ///   applies here unchanged: filter first, never fetch-then-drop.
+    /// * `links` — every row of `links` with its existence flag folded in via
+    ///   `LEFT JOIN`, so the RF-05 check costs no extra query per edge. TTL is
+    ///   deliberately ignored in the join: RF-05 asks "sem row em notes", and an
+    ///   expired-but-present note is still a row. The induced subgraph
+    ///   (RF-03/ADR-03: an edge exists only with both ends in the node set) is
+    ///   computed by the caller: `links` is a dozen rows with no cap to
+    ///   truncate it, and intersecting a complete set cannot drop a candidate —
+    ///   the failure the blind-filter lesson guards against.
+    /// * `memberships` — `(note_path, project_name)` edges to draw, scoped to
+    ///   the filter or the whole corpus, TTL-live notes only (same rule as
+    ///   `project_notes`, so the two surfaces cannot disagree).
+    /// * Unknown `project` (no row in `projects`) → empty notes/links/
+    ///   memberships with the full `projects` list. That is a name, not an
+    ///   error — the same contract `search` keeps (RF-04).
+    pub fn graph_snapshot(&self, project: Option<&str>) -> Result<GraphSnapshot> {
+        let now = Utc::now().to_rfc3339();
+        let projects: Vec<String> = self.project_list()?.into_iter().map(|p| p.name).collect();
+        let pid: Option<(i64, String)> = match project {
+            Some(raw) => match self.project_get(raw)? {
+                Some(p) => Some((p.id, p.name)),
+                None => return Ok(GraphSnapshot { notes: Vec::new(), links: Vec::new(), memberships: Vec::new(), projects }),
+            },
+            None => None,
+        };
+        let notes: Vec<(String, String)> = if let Some((id, _)) = &pid {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, layer FROM notes WHERE (expires_at IS NULL OR expires_at > ?1) AND (project_id = ?2 OR path IN (SELECT note_path FROM note_projects WHERE project_id = ?2)) ORDER BY path")?;
+            stmt.query_map(params![now, id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, layer FROM notes WHERE (expires_at IS NULL OR expires_at > ?1) ORDER BY path")?;
+            stmt.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?
+        };
+        // Uncapped by design (see above): this table is a dozen rows, and a cap
+        // here would orphan edges.
+        let mut lstmt = self.conn.prepare(
+            "SELECT l.from_path, l.to_path, (n.path IS NULL) FROM links l LEFT JOIN notes n ON n.path = l.to_path ORDER BY l.from_path, l.to_path")?;
+        let links: Vec<(String, String, bool)> = lstmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let memberships: Vec<(String, String)> = if let Some((id, name)) = &pid {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, ?2 FROM notes WHERE (expires_at IS NULL OR expires_at > ?1) AND project_id = ?3 UNION SELECT np.note_path, ?2 FROM note_projects np JOIN notes n ON n.path = np.note_path WHERE np.project_id = ?3 AND (n.expires_at IS NULL OR n.expires_at > ?1) ORDER BY 1")?;
+            stmt.query_map(params![now, name, id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT n.path, p.name FROM notes n JOIN projects p ON p.id = n.project_id WHERE (n.expires_at IS NULL OR n.expires_at > ?1) UNION SELECT np.note_path, p.name FROM note_projects np JOIN projects p ON p.id = np.project_id JOIN notes n ON n.path = np.note_path WHERE (n.expires_at IS NULL OR n.expires_at > ?1) ORDER BY 1")?;
+            stmt.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(GraphSnapshot { notes, links, memberships, projects })
     }
 
     // notes upsert (path = layer/scope/path or layer/path)
