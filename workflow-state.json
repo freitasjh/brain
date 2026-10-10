@@ -2,13 +2,18 @@
   "project": "brain",
   "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
-  "current_feature": "brain-multi-project-hooks",
-  "current_phase": "Deployed-panorama",
-  "previous_phase": "completed",
-  "next_phase": "feature-kiro-setup",
-  "type": "bugfix",
+  "current_feature": "viewer-live-graph",
+  "current_phase": "Completed",
+  "previous_phase": "analysis",
+  "next_phase": "archive",
+  "type": "feature",
   "artifacts": {
-    "tasks": ".spec/bugs/project-shared-search/TASKS.md"
+    "tasks": ".spec/bugs/project-shared-search/TASKS.md",
+    "viewer_live_graph": {
+      "spec": ".spec/viewer-live-graph/SPEC.md",
+      "tasks": ".spec/viewer-live-graph/TASKS.md",
+      "verify": ".spec/viewer-live-graph/VERIFY.md"
+    }
   },
   "features": [
     {
@@ -54,6 +59,16 @@
     {
       "name": "brain-multi-project-hooks",
       "phase": "archived",
+      "progress": 100
+    },
+    {
+      "name": "viewer-graph",
+      "phase": "archived",
+      "progress": 100
+    },
+    {
+      "name": "viewer-live-graph",
+      "phase": "completed",
       "progress": 100
     }
   ],
@@ -192,17 +207,18 @@
     "BOOKKEEPING: bump 0.9.0 -> 0.9.1",
     "HELP-01: brain --help agrupado em 5 categorias com titulo, 21 one-liners PT (73 col), long_about, rodape Exemplos; renderer do help raiz (next_help_heading nao agrupa subcomandos no clap 4.6.6); redact_url no env impresso; 13 testes em help_overview.rs, 7 mutacoes; suite 326->342"
   ],
-  "test_count": 342,
-  "test_pass": 253,
+  "test_count": 488,
+  "test_pass": 488,
   "code_review": {
-    "last_invoked_at": "2026-10-08T00:00:00Z",
+    "last_invoked_at": "2026-10-10T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
     "attention_issues": 0,
-    "reviewer_notes": "Final review APPROVED zero red; 2 yellows -> tech-debt followup untracked"
+    "reviewer_notes": "3 loops, APPROVED zero red"
   },
   "harness_status": "passed",
-  "last_updated": "2026-10-08",
+  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto",
+  "last_updated": "2026-10-10",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -356,10 +372,10 @@
     }
   ],
   "test_breakdown": {
-    "rust_workspace": 326,
+    "rust_workspace": 488,
     "python_src_tests": 124,
     "python_legacy_integration_failing": 2,
-    "total": 452
+    "total": 610
   },
   "production": {
     "deployed_at": "2026-10-08",

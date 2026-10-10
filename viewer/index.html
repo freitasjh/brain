@@ -123,8 +123,11 @@ function graphLayerRing(layer) {
   return '#484f58';
 }
 
+let graphEventSource = null;
+
 function stopGraph() {
   if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
+  if (graphEventSource) { graphEventSource.close(); graphEventSource = null; }
 }
 
 async function checkStatus() {
@@ -369,8 +372,26 @@ function escapeHtml(text) {
   return d.innerHTML.split('"').join('&quot;');
 }
 
+// Ensure SSE EventSource is open (idempotent).
+// EventSource lifecycle is managed separately from the RAF loop:
+// - Opened here on first render (or after a view switch).
+// - Closed ONLY by stopGraph() when leaving the graph view.
+// - NEVER closed inside the handler that it fires (that would self-terminate
+//   the stream after the first event).
+function ensureGraphEventSource() {
+  if (!graphEventSource) {
+    graphEventSource = new EventSource(`${API_BASE}/api/events`);
+    graphEventSource.addEventListener('graph-changed', () => { renderGraph(); });
+  }
+}
+
 async function renderGraph() {
-  stopGraph();
+  // Stop RAF loop only — DO NOT close EventSource here.
+  // The 'graph-changed' handler calls renderGraph(); closing the source here
+  // would kill the stream after the first SSE event.
+  if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
+  // SSE: ensure EventSource is open; auto-reconnects on disconnect.
+  ensureGraphEventSource();
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML =
     '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">' +

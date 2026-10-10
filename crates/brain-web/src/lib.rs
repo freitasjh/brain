@@ -1,7 +1,11 @@
-use axum::{extract::{Query, State}, Json, Router, routing::get, debug_handler, http::StatusCode, response::{Html, IntoResponse}};
+use axum::{extract::{Query, State}, Json, Router, routing::get, debug_handler, http::StatusCode, response::{Html, IntoResponse, sse::{Event, Sse}}};
 use serde::Deserialize;
+use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tokio_stream::wrappers::IntervalStream;
+use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct AppState { pub db: String }
@@ -22,6 +26,7 @@ pub fn router(db: String) -> Router {
         .route("/api/read", get(read))
         .route("/api/list", get(list))
         .route("/api/graph", get(graph))
+        .route("/api/events", get(events))
         .fallback_service(serve_dir)
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -270,6 +275,51 @@ async fn graph(State(s): State<AppState>, Query(q): Query<GraphQ>) -> Json<serde
     nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     edges.sort_by(|a, b| (a["from"].as_str(), a["to"].as_str(), a["kind"].as_str()).cmp(&(b["from"].as_str(), b["to"].as_str(), b["kind"].as_str())));
     Json(serde_json::json!({"nodes": nodes, "edges": edges, "dangling": dangling, "projects": snap.projects}))
+}
+
+/// `GET /api/events` — SSE stream that emits `graph-changed` when the DB changes.
+///
+/// Polls `count_notes()` and `count_chunks()` every 2 seconds. When either count
+/// differs from the previous snapshot, emits a `graph-changed` event. The stream
+/// terminates when the client disconnects (axum's `Sse` handles this automatically).
+///
+/// # Why polling instead of SQLite hooks
+///
+/// `brain-web` is a read-only leaf — it cannot depend on `brain-mcp` (which owns
+/// the write path and the embedding queue). Polling is the only mechanism available
+/// without inverting the dependency graph. The 2-second interval is a compromise:
+/// fast enough for the viewer to feel live (< 3s latency), cheap enough that
+/// opening a `Store` every 2s is negligible (WAL mode, indexed counts).
+///
+/// # Why `Arc<Mutex<(i64, i64)>>` for the snapshot
+///
+/// The snapshot must survive across polling iterations. `Arc` shares it between
+/// the handler and the stream; `Mutex` guards concurrent access. The alternative
+/// (a `tokio::sync::watch` channel) would require a writer, which the read-only
+/// handler does not have.
+#[debug_handler]
+async fn events(State(s): State<AppState>) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let db = s.db.clone();
+    let snapshot = Arc::new(Mutex::new((0i64, 0i64)));
+    let stream = IntervalStream::new(tokio::time::interval(std::time::Duration::from_secs(2)))
+        .then(move |_| {
+            let db = db.clone();
+            let snapshot = snapshot.clone();
+            async move {
+                let st = brain_store::Store::open(&db).ok()?;
+                let notes = st.count_notes().unwrap_or(0);
+                let chunks = st.count_chunks().unwrap_or(0);
+                let mut snap = snapshot.lock().unwrap();
+                if snap.0 != notes || snap.1 != chunks {
+                    *snap = (notes, chunks);
+                    Some(Ok(Event::default().event("graph-changed").data("graph-changed")))
+                } else {
+                    None
+                }
+            }
+        })
+        .filter_map(|opt| opt);
+    Sse::new(stream)
 }
 
 #[cfg(test)]
@@ -535,6 +585,7 @@ mod tests {
         "json", "ok", "message", "innerHTML", "className", "textContent", "title",
         "getElementById", "querySelectorAll", "map", "length", "trim", "set",
         "replace", "replaceAll", "split", "join", "slice", "toFixed", "entries", "timeout",
+        "addEventListener", "close",
     ];
 
     /// Roots that hold no payload data, so any member read off one is a library
@@ -1378,5 +1429,145 @@ mod tests {
             assert!(!body.contains(banned), "graph handler uses `{banned}` — degrade to an error envelope instead (R-07)");
         }
         assert!(body.contains("{\"error\""), "graph handler must keep the honest error envelope");
+    }
+
+    // ------------------------------------------------------------------
+    // /api/events (viewer-live-graph): SSE stream that emits `graph-changed`
+    // when the DB changes. Tests verify content-type, event emission on
+    // write, and viewer wiring.
+    // ------------------------------------------------------------------
+
+    /// `GET /api/events` returns 200 with `text/event-stream` content type.
+    #[test]
+    fn events_endpoint_returns_sse_content_type() {
+        use tower::ServiceExt as _;
+        let db = tmp_db("events-sse");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let app = router(db.clone());
+        let req = axum::http::Request::builder()
+            .uri("/api/events")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = rt.block_on(async { app.oneshot(req).await.unwrap() });
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+        assert!(ct.contains("text/event-stream"), "content-type must be text/event-stream, got: {ct}");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// After a write, the SSE stream emits `graph-changed` within the polling
+    /// interval. We connect, wait for the first tick (2s), write a note, and
+    /// assert the event arrives.
+    #[test]
+    fn events_emits_graph_changed_on_write() {
+        use tower::ServiceExt as _;
+        use tokio_stream::StreamExt as _;
+        let db = tmp_db("events-emit");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let app = router(db.clone());
+        let req = axum::http::Request::builder()
+            .uri("/api/events")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = rt.block_on(async { app.oneshot(req).await.unwrap() });
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let mut body = resp.into_body().into_data_stream();
+        // Wait for the first poll tick (interval = 2s). We don't consume the
+        // body; we just wait, then write, then check the stream produces data.
+        rt.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            // Write a note — this changes count_notes/count_chunks.
+            let s = brain_store::Store::open(&db).unwrap();
+            s.note_upsert("regras/global/sse-test", "regras", Some("global"), "## sse", None, &[], false, None).unwrap();
+            drop(s);
+            // The next tick (within 2s) should emit graph-changed.
+            // We read from the body with a timeout.
+            let mut buf = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    body.next(),
+                ).await {
+                    Ok(Some(Ok(chunk))) => {
+                        buf.extend_from_slice(&chunk);
+                        let s = String::from_utf8_lossy(&buf);
+                        if s.contains("event: graph-changed") && s.contains("data: graph-changed") {
+                            return;
+                        }
+                    }
+                    Ok(Some(Err(_))) | Ok(None) => break,
+                    Err(_) => continue,
+                }
+            }
+            panic!("graph-changed event not received within 5s after write");
+        });
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// Viewer script contains `EventSource` and `graph-changed` — the frontend
+    /// wiring for live graph updates.
+    #[test]
+    fn viewer_script_contains_eventsource_and_graph_changed() {
+        let src = viewer_source();
+        assert!(src.contains("EventSource"), "viewer must use EventSource for SSE");
+        assert!(src.contains("graph-changed"), "viewer must listen for graph-changed events");
+        assert!(src.contains("/api/events"), "viewer must connect to /api/events");
+    }
+
+    /// Guard against the self-close bug: `renderGraph()` must NOT call
+    /// `stopGraph()`. The `graph-changed` SSE handler calls `renderGraph()`;
+    /// if `renderGraph()` closes the EventSource, the stream dies after the
+    /// first event and "live" updates are broken.
+    ///
+    /// Regression test for: EventSource self-close on first `graph-changed`.
+    #[test]
+    fn render_graph_does_not_close_event_source() {
+        let src = viewer_source();
+        // Extract renderGraph() body: from its declaration to the next top-level
+        // function declaration (or end of file).
+        let rg_start = src.find("async function renderGraph()")
+            .expect("renderGraph must exist");
+        let rg_rest = &src[rg_start..];
+        let next_fn = rg_rest[1..]
+            .find("\nasync function")
+            .or_else(|| rg_rest[1..].find("\nfunction"))
+            .map(|i| i + 1)
+            .unwrap_or(rg_rest.len());
+        let rg_body = &rg_rest[..next_fn];
+
+        // 1. renderGraph() must NOT call stopGraph() — that would close the
+        //    EventSource that fired 'graph-changed', killing live updates.
+        assert!(
+            !rg_body.contains("stopGraph()"),
+            "renderGraph() must NOT call stopGraph() — that closes the EventSource \
+             that fired 'graph-changed', killing live updates after the first event"
+        );
+
+        // 2. ensureGraphEventSource() must exist and be called from renderGraph.
+        assert!(
+            src.contains("function ensureGraphEventSource()"),
+            "ensureGraphEventSource() must exist to manage EventSource lifecycle"
+        );
+        assert!(
+            rg_body.contains("ensureGraphEventSource()"),
+            "renderGraph() must call ensureGraphEventSource() to open the SSE stream"
+        );
+
+        // 3. stopGraph() must still close EventSource — but only when leaving
+        //    the graph view (checkStatus/browseAll/search call it).
+        let stop_start = src.find("function stopGraph()")
+            .expect("stopGraph must exist");
+        let stop_rest = &src[stop_start..];
+        let stop_next = stop_rest[1..]
+            .find("\nasync function")
+            .or_else(|| stop_rest[1..].find("\nfunction"))
+            .map(|i| i + 1)
+            .unwrap_or(stop_rest.len());
+        let stop_body = &stop_rest[..stop_next];
+        assert!(
+            stop_body.contains("graphEventSource.close()"),
+            "stopGraph() must still close EventSource for view switches"
+        );
     }
 }
