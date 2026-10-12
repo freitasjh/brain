@@ -1,0 +1,13 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Brain Prompt Optimizer",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "agent",
+        "prompt": "Antes de responder ou executar qualquer ação para esta mensagem, ative a skill \"prompt-optimizer\" (via disclose_context) e use-a para analisar e melhorar o prompt do usuário. Se for uma consulta somente-leitura (pergunta, explicação, sem mudança), a skill pode ser dispensada conforme suas próprias regras. Caso contrário, aplique a rota apropriada da skill (Rota A: não entendi / Rota B: re-encoding com bloco PICCO) antes de prosseguir com a tarefa."
+      }
+    }
+  ]
+}

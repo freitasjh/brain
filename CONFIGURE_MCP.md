@@ -45,17 +45,17 @@ SQLite-only). Configurá-las é um no-op.
 
 ### Configuração local (por projeto)
 
-Em `opencode.json` do **projeto consumidor**, adicione o servidor MCP:
+Em `opencode.json` do **projeto consumidor**, adicione o servidor MCP.
+Padrão é o **binário Rust** via stdio (Python é legado até Fase C):
 
 ```json
 {
   "mcpServers": {
     "brain": {
-      "command": "uv",
+      "command": "/caminho/absoluto/para/brain/target/release/brain",
       "args": [
-        "run",
-        "--directory", "/caminho/absoluto/para/brain",
-        "python", "-m", "brain_server"
+        "--db", "/caminho/absoluto/para/brain/data/brain.db",
+        "serve-mcp", "--port", "8321"
       ],
       "env": {
         "BRAIN_DB_PATH": "/caminho/absoluto/para/brain/data/brain.db",
@@ -66,20 +66,45 @@ Em `opencode.json` do **projeto consumidor**, adicione o servidor MCP:
 }
 ```
 
-### Configuração global (todos os projetos)
-
-`~/.config/opencode/mcp.json`:
+Alternativa: servidor dedicado já rodando, config remota SSE:
 
 ```json
 {
   "mcpServers": {
     "brain": {
-      "command": "uv",
+      "transport": "sse",
+      "url": "http://localhost:8321/sse"
+    }
+  }
+}
+```
+
+### Configuração global (todos os projetos)
+
+`~/.config/opencode/mcp.json` — mesmo padrão Rust (stdio):
+
+```json
+{
+  "mcpServers": {
+    "brain": {
+      "command": "/caminho/absoluto/para/brain/target/release/brain",
       "args": [
-        "run",
-        "--directory", "/caminho/absoluto/para/brain",
-        "python", "-m", "brain_server"
+        "--db", "/caminho/absoluto/para/brain/data/brain.db",
+        "serve-mcp", "--port", "8321"
       ]
+    }
+  }
+}
+```
+
+Ou remota SSE (servidor `brain serve-mcp --port 8321` já no ar):
+
+```json
+{
+  "mcpServers": {
+    "brain": {
+      "transport": "sse",
+      "url": "http://localhost:8321/sse"
     }
   }
 }

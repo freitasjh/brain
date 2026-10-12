@@ -1,0 +1,21 @@
+{
+  "hooks": [
+    {
+      "action": {
+        "command": "/home/joao/fusionlf/wsProjeto/brain/target/debug/brain hook --event session-start --payload \"{\\\"id\\\":\\\"kiro-session-start-$$\\\"}\" --question \"$USER_PROMPT\"",
+        "type": "command"
+      },
+      "name": "brain-prompt",
+      "trigger": "UserPromptSubmit"
+    },
+    {
+      "action": {
+        "command": "/home/joao/fusionlf/wsProjeto/brain/target/debug/brain hook --event session-end --payload \"{\\\"id\\\":\\\"kiro-session-end-$$\\\"}\"",
+        "type": "command"
+      },
+      "name": "brain-agent-stop",
+      "trigger": "Stop"
+    }
+  ],
+  "version": "v1"
+}

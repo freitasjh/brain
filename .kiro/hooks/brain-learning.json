@@ -1,0 +1,13 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Brain Learning Reminder",
+      "trigger": "Stop",
+      "action": {
+        "type": "agent",
+        "prompt": "Antes de encerrar: esta execução gerou algum aprendizado durável sobre o projeto? Considere decisões de arquitetura/design, bug resolvido (com causa raiz), convenção ou padrão descoberto, armadilha evitada, ou mudança de contrato (API, env, migration). Se SIM, grave no brain via a ferramenta MCP brain_store ANTES de terminar — nunca via o binário CLI brain. Use o project do projeto ativo detectado (git/config) e scope: \"projetos\". ATENÇÃO: brain_store já prefixa layer/scope, então o path é relativo e começa direto no projeto, sem repetir layer/scope. Diário de desenvolvimento vai na layer \"sessoes\" com path \"<projeto>/<AAAA-MM-DD>-<assunto-curto>\"; decisão de arquitetura durável na layer \"arquitetura\" com path \"<projeto>/<assunto>\"; regra/convenção nova na layer \"regras\" com path \"<projeto>/<assunto>\". Seja específico e conciso: o que foi decidido/descoberto e por quê. Se NÃO houve aprendizado novo que valha a pena (ex.: só leitura, pergunta respondida, mudança trivial), não grave nada e apenas encerre."
+      }
+    }
+  ]
+}

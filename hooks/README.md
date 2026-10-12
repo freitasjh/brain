@@ -48,6 +48,20 @@ Configure via `opencode.json` do projeto consumidor:
 }
 ```
 
+### Kiro
+
+Hooks declarativos em `.kiro/hooks/*.json` (`version: "v1"`). Três arquivos coexistem:
+
+| Arquivo | Tipo | Trigger | Papel |
+|---------|------|---------|-------|
+| `brain-session.json` | `command` | `UserPromptSubmit` + `Stop` | Captura automática (spool via `brain hook --event`) |
+| `brain-learning.json` | `agent` | `Stop` | Lembra o agente de curar aprendizado durável via MCP `brain_store` antes de encerrar (skip se trivial) |
+| `brain-prompt-optimizer.json` | `agent` | `UserPromptSubmit` | Ativa a skill `prompt-optimizer` via `disclose_context` antes de agir (dispensável em consulta somente-leitura) |
+
+`brain hook` (command) faz spool; aprendizado curado é gravado pelo **agente**
+via MCP `brain_store`, nunca via CLI. `setup kiro` gera **só** o command
+(`brain-session.json`); os 2 agent-hooks são padrão do repo, copiados manualmente.
+
 ### Genérico (qualquer MCP cliente)
 
 Use o comando `brain` para scripts manuais:
