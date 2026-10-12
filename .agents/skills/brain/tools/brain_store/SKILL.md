@@ -29,7 +29,7 @@ Use **depois** de:
 | `path` | ✅ | — | Relativo, **sem** `.md`, **sem** `/` no começo, **sem** `..` |
 | `content` | ✅ | — | Markdown. Frontmatter `tags:` no topo melhora a busca |
 | `scope` | **condicional** | — | **Obrigatório** em `arquitetura`, `regras` e `estudos`. `projetos` ou `global` |
-| `project` | ❌ | `null` | Nome do projeto. **Criado automaticamente se não existir** |
+| `project` | ❌ | `null` | Nome do projeto. **Criado automaticamente se não existir** (decisão TD-F4: modo warning, não estrito). CLI avisa em stderr e sai 0; MCP/REST cria em silêncio. Typo fragmenta (`mobile` ≠ `mobile-erp`): conferir com `brain_project_list` antes |
 | `tags` | ❌ | `[]` | Lista de tags. Também pelo frontmatter `tags:` |
 | `pinned` | ❌ | `false` | Sobe o score da busca (`+0.10`). **Não impede o sweep** |
 | `expires_at` | ❌ | `null` | RFC3339. Depois disso a nota some da busca e do sweep apaga |
@@ -129,8 +129,10 @@ antes.
 - **Não use `pinned` como proteção contra o sweep.** `pinned` só sobe o score.
   Quem apaga nota vencida é `expires_at`, e o TTL **vence** o pin.
 - **Não confie que `project=` valida o nome.** O projeto é **criado se não
-  existir** (`brain-mcp:183-188`), então um typo cria um projeto novo em silêncio
-  e a nota fica invisível para quem filtra pelo nome certo. Confira com
+  existir** (`brain-mcp:183-188`), então um typo cria um projeto novo
+  e a nota fica invisível para quem filtra pelo nome certo. O CLI avisa em
+  stderr (`project 'X' novo — será criado`) mas sai 0 e cria mesmo assim
+  (modo warning, TD-F4); MCP/REST cria em silêncio. Confira com
   `brain_project_list`.
 - **Não mande `content` gigante esperando o embed acompanhar.** Os limites de
   acima existem; acima deles a escrita seria minutos de embed pendente.

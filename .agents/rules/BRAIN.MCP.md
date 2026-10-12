@@ -77,6 +77,7 @@ Quando o Brain MCP está configurado, os agentes têm acesso a estas tools:
 | `path` | string | ✅ | — | Path relativo sem `.md` |
 | `content` | string | ✅ | — | Conteúdo markdown |
 | `scope` | string | ⚠️ | — | **Obrigatório para `arquitetura` e `regras`**: `projetos` ou `global` |
+| `project` | string | ❌ | `null` | Nome do projeto. **Criado se não existir** (decisão TD-F4: modo warning, não estrito — ver abaixo). CLI avisa em stderr (`project 'X' novo — será criado; confira com project_list`) e sai 0; MCP/REST cria em silêncio. Typo (`mobile` ≠ `mobile-erp`) fragmenta: conferir com `brain_project_list` antes |
 
 ---
 
