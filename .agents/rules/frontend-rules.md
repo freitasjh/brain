@@ -1,9 +1,10 @@
 # Frontend Rules — viewer (brain-web)
 
 ## Viewer
-- Viewer é `viewer/index.html` estático + `crates/brain-web` axum `GET /api/status,search,read,list` read-only sobre `brain.db`
+- Viewer é `viewer/index.html` estático + `crates/brain-web` axum `GET /api/status,search,read,list,graph,events` read-only sobre `brain.db`
 - No Vue/Pinia/PrimeVue — não há SPA complexo nesta fase
 - Servir estático via `brain_web::router` + `axum::serve` em `brain serve --port 8322`
+- Live update do grafo (viewer-live-graph, 2026-10-10): `GET /api/events` SSE (`text/event-stream`, evento `graph-changed`, polling 2 s sobre snapshot `(count_notes(), count_chunks())`); frontend usa `EventSource` idempotente via `ensureGraphEventSource()` com lifecycle separado do RAF loop — `renderGraph()` cancela só o RAF e garante a fonte aberta, `stopGraph()` fecha só ao sair da view de grafo
 
 ## No-SPA Rule (Fase A+B)
 - Fase C pode adicionar frontend dedicado; até lá, manter viewer minimal

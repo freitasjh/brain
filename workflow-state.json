@@ -3,9 +3,9 @@
   "version": "0.9.1",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
   "current_feature": "viewer-live-graph",
-  "current_phase": "Completed",
-  "previous_phase": "analysis",
-  "next_phase": "archive",
+  "current_phase": "archived",
+  "previous_phase": "Completed",
+  "next_phase": "done",
   "type": "feature",
   "artifacts": {
     "tasks": ".spec/bugs/project-shared-search/TASKS.md",
@@ -68,7 +68,7 @@
     },
     {
       "name": "viewer-live-graph",
-      "phase": "completed",
+      "phase": "archived",
       "progress": 100
     }
   ],
