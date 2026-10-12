@@ -70,6 +70,21 @@ pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
 /// the two limits agree and only the pathological shape trips this one.
 pub const MAX_CHUNKS: usize = 64;
 
+/// Maximum bytes per chunk emitted by [`chunk_text`].
+///
+/// Measured against the production Ollama (`nomic-embed-text`,
+/// `POST /api/embeddings`): three real chunks of 6557, 6654 and 6974 bytes all
+/// fail with `500 {"error":"the input length exceeds the context length"}`,
+/// while 6000-byte prefixes of the same texts succeed — but the threshold is
+/// content-dependent (6200 fails for one text, 6600 succeeds for another), so
+/// it is tokens, not bytes, that bind. 4096 bytes sits ~1.5x below the lowest
+/// observed failure (6200) and is the largest power-of-two with that margin.
+///
+/// Oversize `## ` sections are **subdivided**, never truncated: truncation
+/// silently drops indexed content, while subdivision preserves every byte and
+/// only costs extra (serial) embeds, which [`MAX_CHUNKS`] already bounds.
+pub const MAX_CHUNK_BYTES: usize = 4096;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Note {
     pub path: String,
@@ -221,28 +236,86 @@ pub fn parse_frontmatter(content: &str) -> (Option<String>, Vec<String>) {
 }
 
 pub fn chunk_text(text: &str, max_tokens: usize) -> Vec<String> {
+    // Effective per-chunk byte cap: the caller's width (`max_tokens * 4`,
+    // historically 16384) bounded by the measured Ollama context
+    // ([`MAX_CHUNK_BYTES`]). The min keeps every existing call site honest:
+    // a caller that passes a smaller width gets smaller chunks, never larger
+    // than what the embedder demonstrably accepts.
+    let cap = (max_tokens.saturating_mul(4)).clamp(1, MAX_CHUNK_BYTES);
     // split by lines starting with "## "
-    let mut chunks: Vec<String> = Vec::new();
+    let mut sections: Vec<String> = Vec::new();
     let mut cur = String::new();
     for line in text.lines() {
         if line.starts_with("## ") && !cur.trim().is_empty() {
-            chunks.push(cur.trim().to_string());
+            sections.push(cur.trim().to_string());
             cur.clear();
         }
         cur.push_str(line);
         cur.push('\n');
     }
-    if !cur.trim().is_empty() { chunks.push(cur.trim().to_string()); }
-    if chunks.is_empty() {
-        let t = if text.len() > max_tokens*4 { &text[..max_tokens*4] } else { text };
-        chunks.push(t.to_string());
-        return chunks;
+    if !cur.trim().is_empty() { sections.push(cur.trim().to_string()); }
+    if sections.is_empty() {
+        return split_oversize(text, cap);
     }
-    // truncate oversize
-    for c in &mut chunks {
-        if c.len() > max_tokens*4 { c.truncate(max_tokens*4); }
+    // subdivide oversize sections, never truncate
+    let mut chunks: Vec<String> = Vec::new();
+    for s in sections {
+        if s.len() <= cap {
+            chunks.push(s);
+        } else {
+            chunks.extend(split_oversize(&s, cap));
+        }
     }
     chunks
+}
+
+/// Splits `text` into pieces of at most `cap` bytes, preserving every byte.
+///
+/// Breaks on `\n` whenever the next line still fits; a single line longer
+/// than `cap` is hard-cut at a UTF-8 char boundary. Empty input yields one
+/// empty piece (callers treat blank as their own error); whitespace-only
+/// input yields no pieces so `chunk_text` keeps its "skip blank" contract.
+fn split_oversize(text: &str, cap: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        if text.is_empty() { return vec![String::new()]; }
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in text.split_inclusive('\n') {
+        // Hard-cut lines that alone exceed the cap.
+        let mut rest = line;
+        while rest.len() > cap {
+            // Flush pending first: the cut line starts its own piece.
+            if !cur.trim().is_empty() {
+                out.push(cur.trim_end().to_string());
+                cur.clear();
+            }
+            let cut = floor_char_boundary(rest, cap);
+            out.push(rest[..cut].trim_end().to_string());
+            rest = &rest[cut..];
+        }
+        if cur.len() + rest.len() > cap {
+            if !cur.trim().is_empty() {
+                out.push(cur.trim_end().to_string());
+                cur.clear();
+            }
+            // `rest` fits on its own here (loop above guarantees it).
+            cur.push_str(rest);
+        } else {
+            cur.push_str(rest);
+        }
+    }
+    if !cur.trim().is_empty() { out.push(cur.trim_end().to_string()); }
+    if out.is_empty() { out.push(text.trim().to_string()); }
+    out
+}
+
+/// Largest `n <= cap` such that `s[n]` is a char boundary.
+fn floor_char_boundary(s: &str, cap: usize) -> usize {
+    let mut n = cap.min(s.len());
+    while n > 0 && !s.is_char_boundary(n) { n -= 1; }
+    n.max(1)
 }
 
 pub fn extract_wikilinks(content: &str) -> Vec<String> {
@@ -315,15 +388,91 @@ mod tests {
 
     #[test]
     fn content_limits_accept_exactly_the_maximum() {
-        // Off-by-one guard: the boundary itself is legal, one byte / one chunk
-        // past it is not.
-        let mut at_limit = String::new();
-        for i in 0..MAX_CHUNKS {
-            at_limit.push_str(&format!("## {}\n", i));
-        }
-        at_limit.push_str(&"x".repeat(MAX_CONTENT_BYTES - at_limit.len()));
+        // Off-by-one guard: the boundary itself is legal, one byte past it is
+        // not. Heading-free on purpose: with subdivision every 4096-byte slice
+        // is its own chunk, so MAX_CONTENT_BYTES / MAX_CHUNK_BYTES = 64 lands
+        // exactly on the chunk cap too — one body proving both boundaries.
+        let at_limit = "x".repeat(MAX_CONTENT_BYTES);
         assert_eq!(at_limit.len(), MAX_CONTENT_BYTES);
+        assert_eq!(
+            chunk_text(&at_limit, CHUNK_TARGET_TOKENS).len(),
+            MAX_CHUNKS,
+            "256 KiB of dense text must be exactly 64 chunks of 4096 B"
+        );
         validate_content_limits(&at_limit).expect("exactly at the limit is accepted");
         assert!(validate_content_limits(&format!("{}x", at_limit)).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Per-chunk cap via subdivision (never truncation). Production Ollama
+    // (`nomic-embed-text`) answers 500 "input length exceeds the context
+    // length" for real chunks of 6557/6654/6974 bytes, while 6000-byte
+    // prefixes of the same texts embed fine — with a content-dependent
+    // threshold (6200 fails for one text, 6600 succeeds for another), so the
+    // cap sits at 4096 B (~1.5x below the lowest observed failure).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn chunk_oversize_section_is_subdivided_and_nothing_is_lost() {
+        // One `## ` section ~3x the cap: old code truncated it to 16 KiB (now
+        // to the cap); new code must emit 3 pieces that reassemble to the whole.
+        let body = format!("## Big\n{}", "prose line about the thing\n".repeat(500));
+        assert!(body.len() > MAX_CHUNK_BYTES * 2, "fixture must exceed the cap, got {}", body.len());
+        let ch = chunk_text(&body, CHUNK_TARGET_TOKENS);
+        assert!(ch.len() >= 3, "a {:.0} KiB section must subdivide, got {} chunks", body.len() as f64 / 1024.0, ch.len());
+        for c in &ch {
+            assert!(c.len() <= MAX_CHUNK_BYTES, "no chunk may exceed the cap, got {}", c.len());
+        }
+        let joined = ch.join("\n");
+        for line in body.lines() {
+            assert!(joined.contains(line.trim()), "subdivision lost a line: {line:?}");
+        }
+    }
+
+    #[test]
+    fn chunk_exactly_at_cap_does_not_split() {
+        let head = "## Exact\n";
+        let body = format!("{head}{}", "x".repeat(MAX_CHUNK_BYTES - head.len()));
+        assert_eq!(body.len(), MAX_CHUNK_BYTES);
+        assert_eq!(chunk_text(&body, CHUNK_TARGET_TOKENS).len(), 1);
+    }
+
+    #[test]
+    fn chunk_one_byte_over_cap_splits_into_two() {
+        let head = "## Exact\n";
+        let body = format!("{head}{}", "x".repeat(MAX_CHUNK_BYTES - head.len() + 1));
+        assert_eq!(chunk_text(&body, CHUNK_TARGET_TOKENS).len(), 2);
+    }
+
+    #[test]
+    fn chunk_subdivision_keeps_the_heading_on_the_first_piece() {
+        let body = format!("## KeepMe\n{}", "content line\n".repeat(800));
+        let ch = chunk_text(&body, CHUNK_TARGET_TOKENS);
+        assert!(ch.len() >= 2);
+        assert!(ch[0].starts_with("## KeepMe"), "first piece must keep the heading, got: {:?}", &ch[0][..ch[0].len().min(40)]);
+    }
+
+    #[test]
+    fn chunk_production_failures_now_fit_the_embedder() {
+        // The three real `without_embedding` shapes: 6557/6654/6974 bytes.
+        for size in [6557usize, 6654, 6974] {
+            let body = format!("## Section\n{}", "y".repeat(size));
+            let ch = chunk_text(&body, CHUNK_TARGET_TOKENS);
+            assert!(ch.len() >= 2, "a {size} B section must subdivide");
+            for c in &ch {
+                assert!(c.len() <= MAX_CHUNK_BYTES, "{size} B section produced a {} B chunk", c.len());
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_giant_body_without_headings_subdivides_instead_of_truncating() {
+        // The no-`## ` path used to truncate to `max_tokens * 4`; it must now
+        // subdivide and preserve the tail.
+        let body = "z".repeat(MAX_CHUNK_BYTES * 2 + 100);
+        let ch = chunk_text(&body, CHUNK_TARGET_TOKENS);
+        assert_eq!(ch.len(), 3);
+        let total: usize = ch.iter().map(|c| c.len()).sum();
+        assert_eq!(total, body.len(), "subdivision must preserve every byte, got {total} vs {}", body.len());
     }
 }

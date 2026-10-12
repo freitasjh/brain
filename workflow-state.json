@@ -205,10 +205,11 @@
     "SEC-5: tar em .partial-<pid> + rename atomico + fsync do diretorio",
     "SEC-6: 3 docs que descreviam premissas refutadas por medicao",
     "BOOKKEEPING: bump 0.9.0 -> 0.9.1",
-    "HELP-01: brain --help agrupado em 5 categorias com titulo, 21 one-liners PT (73 col), long_about, rodape Exemplos; renderer do help raiz (next_help_heading nao agrupa subcomandos no clap 4.6.6); redact_url no env impresso; 13 testes em help_overview.rs, 7 mutacoes; suite 326->342"
+    "HELP-01: brain --help agrupado em 5 categorias com titulo, 21 one-liners PT (73 col), long_about, rodape Exemplos; renderer do help raiz (next_help_heading nao agrupa subcomandos no clap 4.6.6); redact_url no env impresso; 13 testes em help_overview.rs, 7 mutacoes; suite 326->342",
+    "P2-CHUNK-CAP: MAX_CHUNK_BYTES=4096 + split_oversize em brain-core (subdivisão, nunca truncar); reindex null=0 coverage 100%; 6 testes brain-core com mutação 6 falhas; suite 488->494"
   ],
-  "test_count": 488,
-  "test_pass": 488,
+  "test_count": 494,
+  "test_pass": 494,
   "code_review": {
     "last_invoked_at": "2026-10-10T00:00:00Z",
     "last_status": "passed",
@@ -217,8 +218,8 @@
     "reviewer_notes": "3 loops, APPROVED zero red"
   },
   "harness_status": "passed",
-  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto",
-  "last_updated": "2026-10-10",
+  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto | 2026-10-12: chunk-cap P2 — cargo test 494/0 + clippy --all-targets 0 + pytest 124/2-legadas + reindex null=0 coverage 100% (dead_lettered RAM=3 limpa no próximo restart)",
+  "last_updated": "2026-10-12",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -369,13 +370,22 @@
       "severity": "P3",
       "phase": "accepted-confirmed",
       "status": "Mantido accepted 2026-10-08 por decisão do usuário"
+    },
+    {
+      "id": "TD-012",
+      "issues": [
+        "chunk_text só splitava em ## e truncava oversize; Ollama nomic-embed-text dá 500 context-length em 6.5-7KB → 3 chunks without_embedding (dead-letter)"
+      ],
+      "severity": "P2",
+      "phase": "resolved",
+      "status": "FECHADO 2026-10-12. MAX_CHUNK_BYTES=4096 (medido: 6000 OK, 6200-6800 falha conforme conteúdo, margem 1.5x) + subdivisão por \\n com hard-cut UTF-8 (nunca truncar) em brain-core; vale nos 3 paths via chunk_text único. reindex --all: null=0, without_embedding=0, coverage 100%. 6 testes novos (brain-core 10->16); mutação sem cap → 6 falhas. cargo test 494/0 + clippy 0 + pytest 124/2-legadas. Contador dead_lettered=3 em RAM do servidor limpa no próximo restart (sem restart nesta task por proibição)"
     }
   ],
   "test_breakdown": {
-    "rust_workspace": 488,
+    "rust_workspace": 494,
     "python_src_tests": 124,
     "python_legacy_integration_failing": 2,
-    "total": 610
+    "total": 616
   },
   "production": {
     "deployed_at": "2026-10-08",
