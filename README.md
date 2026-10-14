@@ -38,6 +38,7 @@ instrução e o servidor SSE.
 - [Consumir de outro projeto](#consumir-de-outro-projeto)
 - [Cadastrar projeto](#cadastrar-projeto)
 - [Iniciar servidores](#iniciar-servidores)
+- [Skills + hooks: Kiro e OpenCode](#skills--hooks-kiro-e-opencode)
 - [Configuração](#configuração)
 - [Viewer API](#viewer-api)
 - [Sessões compartilhadas (B2 MVP)](#sessões-compartilhadas-b2-mvp)
@@ -361,6 +362,84 @@ lsof -ti :8322 | xargs kill -9 2>/dev/null
 lsof -i :8321 || echo "8321 free"
 lsof -i :8322 || echo "8322 free"
 ```
+
+---
+
+## Skills + hooks: Kiro e OpenCode
+
+Liga o brain ao loop do agente: contexto entra no prompt, aprendizado curado
+volta via MCP `brain_store`. Matriz completa em `hooks/README.md`; o roteiro de
+busca em 5 passos mora em `.agents/skills/brain/SKILL.md` — os hooks só apontam
+para lá, nunca copiam.
+
+> Rode os `setup` a partir do checkout do brain. `--dir` aponta o projeto-alvo
+> (sem `--dir`, o alvo é o cwd). `brain doctor --dir <proj>` valida depois.
+
+### Kiro — 4 arquivos em `<proj>/.kiro/`
+
+```bash
+brain setup kiro --dir <proj> --dry-run        # lista as 4 escritas, sem gravar
+brain setup kiro --dir <proj> --yes            # instala sem perguntar
+brain setup kiro --dir <proj> --yes --force    # regrava; originais viram `.bak`
+```
+
+Escreve (com o exe `brain` resolvido em path absoluto no `command`):
+
+| Instalado | Tipo / triggers | Papel |
+|-----------|-----------------|-------|
+| `.kiro/hooks/brain-session.json` | command · `UserPromptSubmit` + `Stop` | Captura automática (spool via `brain hook --event session-start` / `session-end`) |
+| `.kiro/hooks/brain-learning.json` | agent · `Stop` | Lembra o agente de curar aprendizado via MCP `brain_store` (nunca via CLI) |
+| `.kiro/hooks/brain-prompt-optimizer.json` | agent · `UserPromptSubmit` | Manda ler a skill `prompt-optimizer` + o roteiro da skill brain (dispensa em somente-leitura) |
+| `.kiro/steering/brain-learning.md` | steering sempre-ativo | Regra buscar-antes/gravar-depois via MCP |
+
+Sem `--force`, existente não é tocado (`exists, skipped`). Com `--force`, cada
+regravada mantém um `.bak` ao lado. Fontes em `hooks/kiro/` +
+`steering/brain-learning.md`. `~/.kiro/hooks/` é só convenção documentada — o
+setup não instala nada global no Kiro.
+
+Skill `/brain` no Kiro = o steering acima + (para o agente)
+`.agents/skills/brain/SKILL.md` e `.agents/rules/BRAIN.MCP.md`.
+
+### OpenCode — plugin + `opencode.json`
+
+```bash
+brain setup opencode --dir <proj> --brain-dir <checkout-do-brain> --dry-run
+brain setup opencode --dir <proj> --brain-dir <checkout-do-brain> --yes
+```
+
+Três escritas: MCP global (`~/.config/opencode/mcp.json` (ou `opencode.jsonc` se existir), merge aditivo com
+`mcpServers.brain → http://localhost:8321/sse`) · plugin global
+(`~/.config/opencode/plugins/brain-session.js`, fonte em
+`hooks/opencode/brain-session.js`) · skill ref no projeto (`<proj>/opencode.json`
+com `instructions` → `SKILL.md` + `BRAIN.MCP.md` e o mesmo `mcpServers.brain`).
+
+O plugin assina só os 3 eventos com call site verificado no runtime
+(`chat.message`, `experimental.chat.system.transform`,
+`experimental.session.compacting`); `session.created`/`session.idle`/
+`message.updated`/`message.part.updated`/`permission.ask`/`event`/`config` são internos sem trigger e não são assinados. Sem
+`--brain-dir`/`BRAIN_DIR`, o `opencode.json` do projeto é pulado com aviso e
+plugin+MCP continuam instalados.
+
+Skill `/brain` no OpenCode = a entrada em `instructions` no `opencode.json` do
+projeto apontando `.agents/skills/brain/SKILL.md` (mais `BRAIN.MCP.md`).
+
+### Validar: `brain doctor --dir <proj>` (D1–D6, só leitura)
+
+| Check | O que valida | Falha típica |
+|-------|--------------|--------------|
+| D1 | 3 hooks Kiro presentes, `version=v1`, triggers na lista fechada | hook removido/editado → `brain setup kiro --dir <proj>` (`--force` restaura) |
+| D2 | steering presente; agent-hooks sem `--db`/path absoluto/hardcoded | steering apagado → `brain setup kiro --dir <proj> --force` |
+| D3 | plugin opencode com `hook --event` | plugin ausente → `brain setup opencode` |
+| D4 | banco legível — **warn, nunca fail** | ausente/ilegível → warn; suba com `brain serve-mcp`, confira `BRAIN_DB_PATH` |
+| D5 | `BRAIN_DB_PATH` absoluto e existente/pai existente (relativo = warn; pai inexistente = fail) | ajuste `BRAIN_DB_PATH` ou crie o diretório |
+| D6 | skill `brain` referenciada (`opencode.json` do projeto ou config global) | `brain setup opencode` ou `brain setup --project <nome>` |
+
+Nenhum check imprime credencial. **Fail-open em todo o caminho:** MCP/Ollama fora
+= sessão segue sem contexto, sem throw (o plugin não muta nada; os hooks Kiro
+avisam e seguem; D4 nunca reprova por backend fora).
+
+O `.kiro/` do projeto é um snapshot local: após atualizar o brain (`git pull`),
+re-rode o `setup` com `--force` para trazer os hooks/steering novos.
 
 ---
 
