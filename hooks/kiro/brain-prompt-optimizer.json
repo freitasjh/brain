@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "brain-prompt-optimizer",
+      "trigger": "UserPromptSubmit",
+      "description": "Ativa a skill prompt-optimizer no envio do prompt e injeta contexto do brain antes de agir (dispensa em somente-leitura).",
+      "action": {
+        "type": "agent",
+        "prompt": "Antes de agir: se for consulta somente-leitura (pergunta, explicação, sem mudança) — dispense e siga. Senão, leia a skill prompt-optimizer (.agents/skills/prompt-optimizer/SKILL.md) e aplique a rota indicada; para contexto do projeto, execute o roteiro de busca em 5 passos da skill brain (.agents/skills/brain/SKILL.md) antes de codar. Falha de MCP/Ollama nunca bloqueia: siga sem contexto e avise."
+      }
+    }
+  ]
+}

@@ -1,77 +1,72 @@
-# Brain Auto-Capture Hooks
+# Brain Hooks — matriz por IDE
 
-Hooks capturam automaticamente o contexto das sessões dos agentes sem que o agente precise chamar `brain_store` explicitamente.
+Hooks ligam o brain ao loop do agente: contexto entra no prompt,
+aprendizado curado volta via MCP `brain_store`. Fonte única de verdade:
+os arquivos abaixo (o instalador copia; nunca o contrário).
 
-## Como funciona
+## Matriz IDE
 
-Cada hook é um script que:
-1. Recebe dados do evento via stdin (JSON)
-2. Extrai informações relevantes
-3. Chama o brain MCP server para salvar/consultar
+| IDE | Instala (`brain setup`) | Agent-hooks no projeto | Steering | Valida (`brain doctor`) | Global |
+|-----|-------------------------|------------------------|----------|-------------------------|--------|
+| Kiro | `brain setup kiro --dir <proj>` → 4 arquivos em `<proj>/.kiro/` | `hooks/brain-session.json` (command) + `hooks/brain-learning.json` (agent) + `hooks/brain-prompt-optimizer.json` (agent) | `.kiro/steering/brain-learning.md` | D1 (hooks) + D2 (steering) | `~/.kiro/hooks/` — convenção do Kiro p/ hooks fora de projeto; documentado, não instalado pelo setup |
+| OpenCode | `brain setup opencode --dir <proj> --brain-dir <checkout>` → plugin + `opencode.json` | plugin `brain-session.js` (eventos verificados `chat.message`, `experimental.chat.system.transform`, `experimental.session.compacting`) | n/a (skill via `opencode.json`) | D3 (plugin) + D6 (skill ref) | `~/.config/opencode/plugins/brain-session.js` |
+| Ambos | — | — | — | D4 (backend warn-nunca-fail) + D5 (DB gravável) | — |
 
-## Hooks disponíveis
+Detalhe dos instalados em `crates/brain-cli/src/setup.rs` (`kiro_target`,
+`opencode_target`, `opencode_plugin_target`) e dos checks em
+`crates/brain-cli/src/doctor.rs` (D1–D6).
 
-| Hook | Evento | O que captura |
-|------|--------|---------------|
-| `on-session-start` | Início da sessão | Carrega contexto relevante do brain |
-| `on-prompt-submit` | Usuário enviou prompt | Salva o prompt no brain |
-| `on-tool-result` | Tool retornou resultado | Salva resultados importantes |
-| `on-session-end` | Fim da sessão | Salva resumo da sessão |
+## Kiro — 3 hooks + steering
 
-## Instalação por agente
+Fontes (o `setup kiro` copia os 4, byte-fiel; `sanity.sh` valida):
 
-### Claude Code
+| Arquivo (fonte) | Tipo | Trigger | Papel |
+|-----------------|------|---------|-------|
+| `hooks/kiro/brain-session.json` | `command` | `UserPromptSubmit` + `Stop` | Captura automática (spool via `brain hook --event session-start/session-end`) |
+| `hooks/kiro/brain-learning.json` | `agent` | `Stop` | Lembra o agente de curar aprendizado via MCP `brain_store` (skip se trivial; nunca via CLI) |
+| `hooks/kiro/brain-prompt-optimizer.json` | `agent` | `UserPromptSubmit` | Manda ler a skill `prompt-optimizer` (`.agents/skills/prompt-optimizer/SKILL.md`) + roteiro de busca da skill brain (dispensa em somente-leitura) |
+| `steering/brain-learning.md` | steering | sempre-ativo | Regra buscar-antes/gravar-depois via MCP |
 
-`~/.claude/settings.json`:
+Regras dos estáticos (checadas por `bash hooks/kiro/sanity.sh`, 3 asserts):
+triggers ∈ lista fechada · sem projeto hardcoded · sem path absoluto ·
+sem `--db` · agent-hook nunca instrui `brain hook --event` (curadoria só via
+MCP) · prompt ≤40 linhas (warn) · roteiro mora só na skill (ponte, sem drift).
 
-```json
-{
-  "hooks": {
-    "SessionStart": "/caminho/para/brain/hooks/on-session-start.sh",
-    "PostToolUse": "/caminho/para/brain/hooks/on-tool-result.sh",
-    "Stop": "/caminho/para/brain/hooks/on-session-end.sh"
-  }
-}
-```
+Aprendizado curado é gravado pelo **agente** via MCP `brain_store`, nunca via
+CLI. `path` sempre relativo sem repetir layer/scope; `scope` correto
+(`projetos` vs `global`).
 
-### OpenCode
+## OpenCode — plugin de sessão
 
-Configure via `opencode.json` do projeto consumidor:
+Fonte: `hooks/opencode/brain-session.js` (+ testes `hooks/opencode/brain-session.test.mjs`,
+`node --test`). Só assina eventos com call site verificado no runtime
+instalado (reality-check OC-01: `session.created/session.idle/message.updated`
+são internos sem trigger — assinar seria hook morto). Fail-open total (MCP
+fora = sem mutação, sem throw); anexo truncado em 4000 chars (mesma classe de
+`hooks/brain-hook.sh`); `output.prompt` da compactação nunca sobrescrito.
+Decisão do spike: `.spec/brain-specialist/OC-02-DECISION.md`.
 
-```json
-{
-  "hooks": {
-    "session-start": "/caminho/para/brain/hooks/on-session-start.sh",
-    "tool-result": "/caminho/para/brain/hooks/on-tool-result.sh",
-    "session-end": "/caminho/para/brain/hooks/on-session-end.sh"
-  }
-}
-```
+## `doctor` D1–D6 (só leitura; fail → exit 1, warn → exit 0)
 
-### Kiro
+| Check | O que valida | Falha típica |
+|-------|--------------|--------------|
+| D1 | 3 hooks kiro presentes, `version=v1`, triggers na lista | hook removido/editado → fail + caminho exato |
+| D2 | steering presente; agent-hooks sem `--db`/absoluto/hardcoded | steering apagado → fail |
+| D3 | plugin opencode registrado chamando `brain hook` | plugin ausente → fail |
+| D4 | backend alcançável — **warn, nunca fail** | MCP/Ollama fora → warn, exit 0 |
+| D5 | `BRAIN_DB_PATH` resolvido e gravável | pai inexistente → fail (`setup` já cria via `ensure_db_parent`) |
+| D6 | skill `brain` referenciada (`opencode.json` do projeto ou config global) | sem ref → fail + como corrigir |
 
-Hooks declarativos em `.kiro/hooks/*.json` (`version: "v1"`). Três arquivos coexistem:
+Nenhum check imprime credencial (segue o padrão do `--help` com redação).
 
-| Arquivo | Tipo | Trigger | Papel |
-|---------|------|---------|-------|
-| `brain-session.json` | `command` | `UserPromptSubmit` + `Stop` | Captura automática (spool via `brain hook --event`) |
-| `brain-learning.json` | `agent` | `Stop` | Lembra o agente de curar aprendizado durável via MCP `brain_store` antes de encerrar (skip se trivial) |
-| `brain-prompt-optimizer.json` | `agent` | `UserPromptSubmit` | Ativa a skill `prompt-optimizer` via `disclose_context` antes de agir (dispensável em consulta somente-leitura) |
-
-`brain hook` (command) faz spool; aprendizado curado é gravado pelo **agente**
-via MCP `brain_store`, nunca via CLI. `setup kiro` gera **só** o command
-(`brain-session.json`); os 2 agent-hooks são padrão do repo, copiados manualmente.
-
-### Genérico (qualquer MCP cliente)
-
-Use o comando `brain` para scripts manuais:
+## Genérico (qualquer cliente MCP)
 
 ```bash
 # Antes de codificar: buscar contexto
 brain search "contexto do projeto" --top-k 5
 
-# Depois de uma decisão: salvar
-brain store arquitetura meu-projeto/decisao "# Decisão..."
+# Depois de uma decisão: salvar (scope obrigatório em arquitetura/regras/estudos)
+brain store regras meu-projeto/decisao "## Decisão..." --scope projetos
 
 # Ao finalizar sessão: salvar resumo
 brain store sessoes meu-projeto/$(date +%Y-%m-%d) "## Sessão..."
@@ -83,3 +78,6 @@ brain store sessoes meu-projeto/$(date +%Y-%m-%d) "## Sessão..."
 |----------|---------|-----------|
 | `BRAIN_URL` | `http://localhost:8321` | URL do brain server |
 | `BRAIN_PROJECT` | `(detectado pelo git)` | Nome do projeto atual |
+| `BRAIN_DB_PATH` | `./data/brain.db` | SQLite-only DB (doctor D5 valida) |
+| `BRAIN_OLLAMA_URL` | `http://localhost:11434` | Embeddings (D4 nunca imprime com credencial) |
+| `BRAIN_DIR` / `--brain-dir` | — | Checkout do brain p/ skill ref no `opencode.json` do projeto |

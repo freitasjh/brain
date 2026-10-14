@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use brain_core::{sanitize_relative_path, validate_layer, validate_scope, LAYERS_WITH_SCOPE};
 use brain_mcp::{ChunkSyncInput, embed_chunks, sync_note_chunks};
 use brain_store::{NoteEmbed, Store};
@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 mod config;
+mod doctor;
 mod legacy_import;
 mod resolve;
 mod setup;
@@ -88,7 +89,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Memória", &["checkpoints", "restore", "delete", "export", "backup"]),
     ("Manutenção", &["forget-sweep", "reindex", "migrate"]),
     ("Servidor", &["server", "serve-mcp", "serve", "hook"]),
-    ("Projetos e setup", &["project", "setup"]),
+    ("Projetos e setup", &["project", "setup", "doctor"]),
 ];
 
 /// Title of the section that catches any subcommand not named in [`HELP_GROUPS`].
@@ -408,6 +409,12 @@ mesmos de serve-mcp; o shutdown é o mesmo nos três: SIGINT ou SIGTERM, para qu
     // ---- Projetos e setup -------------------------------------------------------
     /// Gerencia projetos e vínculos de notas
     Project { #[command(subcommand)] sub: ProjectCmd },
+    /// Roda o diagnóstico D1–D6 da instalação (verde = pronto)
+    Doctor {
+        /// Diretório do projeto a diagnosticar (default: cwd)
+        #[arg(long)]
+        dir: Option<String>,
+    },
     /// Instala MCP, regras e serviço (uso único)
     Setup {
         /// opencode | kiro | systemd | shell | project | all
@@ -1517,6 +1524,19 @@ async fn main() -> Result<()> {
         }
         Cmd::Hook { event, project, payload, question } => {
             hook_handle(event, project, payload, question, db).await?;
+        }
+        Cmd::Doctor { dir } => {
+            // SU-02a: diagnóstico D1–D6, só leitura. Fail → exit 1; warn → exit 0.
+            let proj = match &dir {
+                Some(d) => PathBuf::from(d),
+                None => std::env::current_dir().context("cwd")?,
+            };
+            let home = PathBuf::from(std::env::var("HOME").context("HOME not set")?);
+            let rep = doctor::run_doctor(&proj, &home, &db);
+            outln!("{}", rep.render().trim_end());
+            if rep.has_fail() {
+                std::process::exit(1);
+            }
         }
         Cmd::Setup { target, mcp_port, viewer_port, brain_dir, dir, force, dry_run, yes, project, decline_project } => {
             setup::run_setup(&setup::SetupOpts {

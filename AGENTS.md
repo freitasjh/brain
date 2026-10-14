@@ -97,7 +97,7 @@ BRAIN_URL=http://localhost:9000 uv run brain ping
 |---------|-----------|
 | `brain setup all` | One-shot: **pergunta a IDE** (opencode\|kiro) e instala uma + systemd + shell. Sem tty assume `opencode` e avisa; `kiro` nao entra por padrao |
 | `brain setup opencode` | MCP do brain + plugin de sessao `~/.config/opencode/plugins/brain-session.js` |
-| `brain setup kiro` | Hook de sessao `.kiro/hooks/brain-session.json` (**dentro do projeto**) |
+| `brain setup kiro` | 4 arquivos em `<proj>/.kiro/` (1 command `brain-session.json` + 2 agent + steering `brain-learning.md`) |
 | `brain setup systemd` | Serviço systemd user para auto-start |
 | `brain setup --project <nome>` | Grava a decisão de projeto do diretório em `config.json`, sem perguntar |
 | `brain setup --decline-project` | Grava a recusa (`motivo: "recusado"`), sem perguntar |
@@ -276,6 +276,17 @@ verdade** para rules/instructions/steering de cada IA:
 
 | Arquivo | Instalado por | Destino |
 |---------|---------------|---------|
+| `hooks/kiro/brain-session.json` | `brain setup kiro` | `<proj>/.kiro/hooks/brain-session.json` |
+| `hooks/kiro/brain-learning.json` | `brain setup kiro` | `<proj>/.kiro/hooks/brain-learning.json` |
+| `hooks/kiro/brain-prompt-optimizer.json` | `brain setup kiro` | `<proj>/.kiro/hooks/brain-prompt-optimizer.json` |
+| `steering/brain-learning.md` | `brain setup kiro` | `<proj>/.kiro/steering/brain-learning.md` |
+| `hooks/opencode/brain-session.js` | `brain setup opencode` | `~/.config/opencode/plugins/brain-session.js` (+ skill ref no `<proj>/opencode.json` via `--brain-dir`) |
+| `hooks/brain-hook.sh` | manual (PATH) | referenciado pelos hooks `command` via binário `brain` |
+
+Matriz completa por IDE (setup/agent-hooks/steering/doctor/global) em
+`hooks/README.md`. `doctor` valida D1–D6 (D4 warn-nunca-fail); detalhe em
+`crates/brain-cli/src/doctor.rs`. Hooks globais Kiro (`~/.kiro/hooks/`) são
+convenção documentada, não instalados pelo setup.
 
 **Sempre** que alterar um desses hooks, o instalador correspondente deve ser
 atualizado OU a fonte do hook deve ser usada (cópia literal do arquivo).

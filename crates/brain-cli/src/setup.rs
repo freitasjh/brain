@@ -242,196 +242,126 @@ fn shell_target(home: &Path, db: &str, force: bool, dry_run: bool) -> Result<()>
     Ok(())
 }
 
-/// The opencode plugin (R-01: a JS plugin under `.opencode/plugins/`, loaded at boot
-/// with no registration).
+/// SU-01b (Bloco 4, OC-01/OC-02) — lista fechada de eventos opencode.
 ///
-/// **Written to the *global* config, not the project.** The hook is a property of the
-/// machine — it calls one binary and reads one config — and a per-project copy would
-/// need committing, would go stale when the binary path changes, and would have to be
-/// re-installed per checkout. opencode loads both locations, so the global one is
-/// enough.
+/// Os 3 hooks com call site `trigger("...")` no runtime instalado (opencode
+/// 1.18.31); a extração está ancorada em `hooks/opencode/brain-session.test.mjs`.
+/// I3: o instalado só assina o que está aqui. **Ordem alfabética de propósito:**
+/// `plugin_hook_keys` devolve ordenado e o `assert` em `opencode_plugin_js`
+/// compara sequência.
+pub const OPENCODE_VERIFIED_EVENTS: &[&str] = &[
+    "chat.message",
+    "experimental.chat.system.transform",
+    "experimental.session.compacting",
+];
+
+/// Mortos conhecidos em 1.18.31: sem call site, hook silenciosamente morto.
+/// Espelha `KNOWN_DEAD` de `hooks/opencode/brain-session.test.mjs` — as duas
+/// listas devem mudar juntas.
+pub const OPENCODE_DEAD_EVENTS: &[&str] = &[
+    "session.created",
+    "session.idle",
+    "message.updated",
+    "message.part.updated",
+    "permission.ask",
+    "event",
+    "config",
+];
+
+/// SU-01b — o plugin opencode instalado (Bloco 4, OC-01/OC-02).
 ///
-/// **What this file can and cannot claim.** The plugin's shape follows
-/// `opencode.ai/docs/plugins/` — the `Plugin` export, the destructured arguments, and
-/// the `session.created` / `session.idle` event names are all from the documentation.
-/// What is *not* verifiable here is that opencode accepts this file, or that a session
-/// really shows the output, because no opencode runs in this test suite. There is
-/// **no schema to validate against** — the documentation defines none — so the only
-/// mechanical check available is "is it syntactically valid JS", which
-/// `the_opencode_plugin_is_syntactically_valid_javascript` does with `node --check`
-/// when node is present.
+/// Fonte única: `hooks/opencode/brain-session.js`, embutido via `include_str!`
+/// (mesmo padrão do SU-01a p/ kiro, ADR-1): o `setup opencode` funciona sem o
+/// checkout por perto, e qualquer reword evolui o arquivo-fonte — mas exige
+/// rebuild do binário para re-embutir (o teste `instalado_fiel_ao_estatico`
+/// prende a fidelidade).
 ///
-/// **On injection.** The kiro docs state plainly that exit code 0 puts the command's
-/// STDOUT into the agent's context. The opencode plugin API has no documented
-/// equivalent, so the output is printed into the session output, which is as close as
-/// the documented surface allows. The authoritative injection in opencode is the MCP
-/// tools themselves; this hook is the automatic half that does not need the model to
-/// ask.
+/// Por que não instalar o estático byte-fiel direto: o instalador conhece o
+/// `exe` real (o binário que está rodando), e congelá-lo como fallback de
+/// `BRAIN_BIN` é o que faz o hook chamar o binário certo mesmo sem `brain` no
+/// `PATH`. `BRAIN_BIN` no ambiente continua vencendo (sem hardcoded surpresa).
 ///
-/// **On `--project`.** An earlier draft of this comment had the plugin pass
-/// `directory` as `--project`. That is refused, by design: the project name becomes a
-/// path component (`sanitize_relative_path`), and an absolute path is rejected — a
-/// measured `Error: Absolute paths not allowed`, exit 1. opencode is the only IDE that
-/// hands the plugin the working directory, so the plugin uses it the way it is meant to
-/// be used: as the **cwd of the child process**, which is what lets the cascade
-/// resolve the project from the config, the git remote, or the directory name.
+/// Eventos (reality-check no binário instalado opencode 1.18.31 — ver o
+/// cabeçalho do fonte e `.spec/brain-specialist/OC-02-DECISION.md`): o runtime
+/// despacha por UM ponto, `Plugin.trigger(name, ...)`, e nome sem call site
+/// `trigger("...")` NUNCA executa. O gerador anterior assinava
+/// `session.created/session.idle/message.updated/message.part.updated` —
+/// eventos internos do barramento sem trigger, plugin silenciosamente morto.
+/// O instalado assina só [`OPENCODE_VERIFIED_EVENTS`]; os
+/// [`OPENCODE_DEAD_EVENTS`] são negados por teste (classe code_only, como o
+/// `brain-session.test.mjs` T3).
+///
+/// O que continua valendo do gerador anterior (e continua testado):
+/// - sem `--db` (o valor congelaria o ambiente; `brain hook` já lê
+///   `BRAIN_DB_PATH` e cai em `./data/brain.db` relativo ao cwd);
+/// - `directory` como cwd do filho, nunca como `--project` (path absoluto é
+///   recusado com `Absolute paths not allowed`);
+/// - `--payload` com id único por invocação (`Date.now()` + contador), senão
+///   o dedup do hook registra 1 sessão por projeto por login;
+/// - fail-open total (`.nothrow()`, catch sem rethrow): hook que falha não
+///   derruba a sessão; payload sem segredo.
+pub const OPENCODE_STATIC_PLUGIN: &str =
+    include_str!("../../../hooks/opencode/brain-session.js");
+
+/// O fallback de `BRAIN_BIN` no template: `process.env.BRAIN_BIN || "brain"`.
+/// A substituição troca só o literal `"brain"` pelo `exe` real; com
+/// `exe == "brain"` a saída é byte-fiel à fonte.
+const OPENCODE_BIN_FALLBACK_NEEDLE: &str = r#"process.env.BRAIN_BIN || "brain""#;
+
+/// SU-01b (I3, enforcement): código sem comentários (`//` e `/* */` fora —
+/// classe code_only do Bloco 4: os comentários do plugin nomeiam os mortos
+/// de propósito, então o scan vale sobre o código). Mesma extração do
+/// `pluginKeys()` de `hooks/opencode/brain-session.test.mjs`.
+pub fn plugin_code_only(js: &str) -> String {
+    let mut out = String::new();
+    for chunk in js.split("/*") {
+        let first = chunk.split("*/").next().unwrap_or(chunk);
+        for line in first.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Chaves de hook de primeiro nível (`"nome":` no início da linha),
+/// ordenadas e sem duplicata.
+pub fn plugin_hook_keys(js: &str) -> Vec<String> {
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in plugin_code_only(js).lines() {
+        let Some(rest) = line.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = rest.find('"') else {
+            continue;
+        };
+        if rest[end + 1..].trim_start().starts_with(':') {
+            keys.insert(rest[..end].to_string());
+        }
+    }
+    keys.into_iter().collect()
+}
+
 pub fn opencode_plugin_js(exe: &str) -> String {
     // JSON-escaped so a path containing a quote cannot break out of the literal.
     let bin = serde_json::to_string(exe).unwrap_or_else(|_| format!("\"{exe}\""));
-    format!(
-        r#"// Generated by `brain setup opencode`. Edit freely — re-running setup without
-// --force leaves this file alone.
-//
-// Installs the brain session hook: it records each session and prints what the brain
-// knows. Best-effort by construction: every failure path below is caught, because a
-// hook that throws takes the IDE's session with it.
-//
-// Each invocation carries its own `--payload` id. Without one, `brain hook` dedups on
-// a hash of a constant string and the second session of the day is silently dropped.
-
-const BRAIN_BIN = {bin};
-
-// **There is no database constant here, and its absence is the point.** The database
-// used to be frozen into this file as a literal, which had two consequences.
-// Reconfiguring `BRAIN_DB_PATH` did nothing — the plugin kept writing to the old
-// database, silently. And a `--db` literal *beats* the environment, so the file was
-// not merely stale, it was actively overriding whatever the operator configured. Same
-// class of bug as the bench that deleted 278 notes (`TD-004d`): an absolute path
-// baked into a file, standing in for a decision that belongs to the environment.
-//
-// `brain hook` already reads `BRAIN_DB_PATH` (a clap `env=` on its `db` argument) and
-// falls back to `./data/brain.db` relative to its own working directory — which this
-// plugin sets to `directory`. So the correct command simply names no database, and
-// this module carries no `db` parameter to freeze one from. The value `setup` was given
-// is still used, for the kiro artifact's sibling path and for `stale_constant`; it is
-// just not written here.
-
-export const Plugin = async ({{ client, $, directory }}) => {{
-  // `client.app.log` is what the documentation recommends; console is the fallback so
-  // the plugin still says something if the client is absent.
-  const log = (message) => {{
-    try {{
-      if (client && client.app && typeof client.app.log === "function") client.app.log(message);
-      else console.log(message);
-    }} catch (_) {{}}
-  }};
-
-  // **The id is what makes the dedup mean anything.** `brain hook` dedups on the
-  // payload's `id`; with no payload it falls back to hashing
-  // `"<event>|<project>|{{}}"`, which is *constant* for a given event and project. The
-  // measured result was one recorded session per project per login: every later
-  // `session.created` printed "hook deduplicated". The previous hook path
-  // (`brain-hook.py`) passed an id, and the new artifact is what stopped.
-  let invocation = 0;
-  const nextId = (event) => {{
-    invocation += 1;
-    return JSON.stringify({{ id: `opencode-${{event}}-${{Date.now()}}-${{invocation}}` }});
-  }};
-
-  // `directory` is the cwd, NOT `--project`: the project name becomes a path
-  // component, and an absolute path is refused. opencode is the only IDE that hands
-  // the plugin this path, and using it as the child's cwd is what lets the cascade in
-  // `brain hook` resolve the project (config.json -> git remote -> directory name).
-  // RF-04: the payload carries the user's actual question.
-  //
-  // `question` is `""` for an event that has none, and that is deliberate rather than
-  // convenient: `brain hook` then injects by project alone and says so on stderr, instead
-  // of searching a fixed string that matches nothing. Omitting the key entirely would
-  // produce the same result by accident, and a key that is sometimes absent is a key
-  // nobody can rely on.
-  const runHook = async (event, question) => {{
-    try {{
-      // No `--db`: `brain hook` already reads `BRAIN_DB_PATH` and only falls back to
-      // `./data/brain.db` relative to its own working directory. Passing one here
-      // would override the environment.
-      // The question is a **separate argument**, not a key in the payload: the payload is
-      // JSON, and a question containing a quote would break it. As its own `argv` element
-      // it needs no escaping at all.
-      const result = await $`${{BRAIN_BIN}} hook --event ${{event}} --payload ${{nextId(event)}} --question ${{question ?? ""}}`
-        .cwd(directory)
-        .nothrow();
-      const out = typeof result.text === "function" ? await result.text() : String(result ?? "");
-      if (out && out.trim()) console.log(out);
-      return out;
-    }} catch (err) {{
-      // RFC/RF-07: a missing binary, an unreachable server or a broken database must
-      // never surface as an error in the conversation.
-      log(`brain: ${{event}} could not run (${{err}}); continuing without it`);
-      return "";
-    }}
-  }};
-
-  // **How the question is captured, and why it is this shape.**
-  //
-  // The plugins documentation lists `message.updated` and `message.part.updated`, and the
-  // SDK types give the payload: `message.updated` carries
-  // `properties.info` (a `Message`, discriminated by `role: "user" | "assistant"`) and
-  // `message.part.updated` carries `properties.part` (a `TextPart` with the `text`).
-  // Neither carries both, so neither event alone can answer "what did the user just
-  // ask": the role is on one and the text on the other.
-  //
-  // So: `message.updated` records which message ids belong to the user, and
-  // `message.part.updated` supplies the text. A text part is **not** evidence of a user
-  // message on its own — assistant replies stream text parts too, and taking the first
-  // one would inject the model's own answer back as the user's question. The id set is
-  // what separates them.
-  //
-  // Two orderings are handled, because the two events are independent and the repository
-  // does not document which arrives first: parts are buffered by message id, and the
-  // text is emitted whenever the pairing completes, in either direction. `injected` makes
-  // it exactly once, because a user message is updated more than once as it streams.
-  const userMessageIds = new Set();
-  const partsByMessage = new Map();
-  const injected = new Set();
-  let injectedAny = false;
-
-  const injectFor = async (messageId) => {{
-    if (injected.has(messageId)) return;
-    const parts = partsByMessage.get(messageId) || [];
-    const question = parts
-      .filter((p) => p && p.type === "text" && typeof p.text === "string" && !p.synthetic && !p.ignored)
-      .map((p) => p.text.trim())
-      .filter((t) => t.length > 0)
-      .join(" ")
-      .trim();
-    injected.add(messageId);
-    injectedAny = true;
-    await runHook("session-start", question);
-  }};
-
-  return {{
-    // The session is still **recorded** when it is created; it just no longer injects,
-    // because at that point there is no question to inject on. Recording used to be
-    // fused to injection in the same event, and separating them is what lets the context
-    // arrive with the prompt instead of before it.
-    "session.created": async () => {{ await runHook("session-start", ""); }},
-    "session.idle": async () => {{ await runHook("session-end", ""); }},
-    "message.updated": async ({{ event }}) => {{
-      const info = event && event.properties && event.properties.info;
-      if (!info || info.role !== "user" || !info.id) return;
-      userMessageIds.add(info.id);
-      await injectFor(info.id);
-    }},
-    "message.part.updated": async ({{ event }}) => {{
-      const part = event && event.properties && event.properties.part;
-      if (!part || !part.messageID) return;
-      if (!userMessageIds.has(part.messageID)) {{
-        // Buffer: `message.updated` may not have arrived yet. Never inject from here on
-        // its own, because that is the path that would pick up an assistant message.
-        const buffered = partsByMessage.get(part.messageID) || [];
-        buffered.push(part);
-        partsByMessage.set(part.messageID, buffered);
-        return;
-      }}
-      const buffered = partsByMessage.get(part.messageID) || [];
-      buffered.push(part);
-      partsByMessage.set(part.messageID, buffered);
-      await injectFor(part.messageID);
-    }},
-  }};
-}};
-"#
-    )
+    let out = OPENCODE_STATIC_PLUGIN.replacen(
+        OPENCODE_BIN_FALLBACK_NEEDLE,
+        &format!(r#"process.env.BRAIN_BIN || {bin}"#),
+        1,
+    );
+    // I3 fail-loud: se o template ganhar/perder um hook sem atualizar a lista
+    // fechada, o instalador recusa em vez de embarcar evento morto (ou deixar
+    // um verificado de fora). Custo de um scan de 8 KiB por install. A igualdade
+    // já implica a negação, mas a denylist nomeia o modo de falha no assert.
+    let owned = plugin_hook_keys(&out);
+    let keys: Vec<&str> = owned.iter().map(String::as_str).collect();
+    assert!(
+        keys == OPENCODE_VERIFIED_EVENTS
+            && !keys.iter().any(|k| OPENCODE_DEAD_EVENTS.contains(k)),
+        "opencode plugin fora da lista fechada: atualize OPENCODE_VERIFIED_EVENTS/OPENCODE_DEAD_EVENTS junto com hooks/opencode/brain-session.js"
+    );
+    out
 }
 
 /// Install `~/.config/opencode/plugins/brain-session.js`.
@@ -478,13 +408,21 @@ fn opencode_plugin_target(home: &Path, exe: &str, force: bool, dry_run: bool) ->
     Ok(())
 }
 
-/// The value an existing plugin has for `const <label> = "…";`, if it has one.
+/// The value an existing plugin has for `BRAIN_BIN`, if it has one.
+///
+/// Two shapes: pré-SU-01b (`const BRAIN_BIN = "/abs/brain";`) e SU-01b
+/// (`const BRAIN_BIN = process.env.BRAIN_BIN || "/abs/brain";`, env com
+/// fallback). Pega o último literal `"..."` da linha, que é o fallback nos
+/// dois casos — então um plugin antigo ainda é legível no upgrade.
 fn stale_constant(path: &Path, label: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    let needle = format!("const {label} = \"");
-    let start = text.find(&needle)? + needle.len();
-    let end = start + text[start..].find('"')?;
-    Some(text[start..end].to_string())
+    let start = text.find(&format!("const {label} ="))?;
+    let line = text[start..].lines().next()?;
+    let rhs = line.split_once('=')?.1;
+    let rhs = rhs.rsplit("||").next().unwrap_or(rhs);
+    let s = rhs.find('"')?;
+    let e = s + 1 + rhs[s + 1..].find('"')?;
+    Some(rhs[s + 1..e].to_string())
 }
 
 fn opencode_target(home: &Path, url: &str, force: bool, dry_run: bool) -> Result<()> {
@@ -536,6 +474,38 @@ fn systemd_target(home: &Path, exe: &str, db: &str, mcp_port: u16, viewer_port: 
     match std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status() {
         Ok(s) if s.success() => println!("systemd: daemon-reload ok — enable with: systemctl --user enable --now brain-mcp brain-viewer"),
         _ => println!("systemd: daemon-reload failed — run manually: systemctl --user daemon-reload"),
+    }
+    Ok(())
+}
+
+/// SU-01b: `setup opencode` instala plugin sessão + skill ref.
+///
+/// Três escritas, todas idempotentes e cobertas por `dry_run`:
+/// 1. MCP global (`opencode_target` — merge aditivo, `.bak` em overwrite);
+/// 2. plugin verificado (`opencode_plugin_target` — skip sem `--force`, `.bak`);
+/// 3. skill ref no `opencode.json` do projeto (mesmo merge aditivo de
+///    `project_target`: MCP + `instructions` sem duplicar).
+///
+/// A (3) precisa saber onde está o checkout do brain (`--brain-dir`/`BRAIN_DIR`,
+/// como o target `project`); sem isso ela é pulada com aviso em vez de falhar —
+/// o plugin+MCP já instalados continuam válidos (fail-open; o E2E do SU-04 roda
+/// `setup opencode` puro).
+fn install_opencode(
+    home: &Path,
+    dir: &Path,
+    brain_dir: Option<&Path>,
+    url: &str,
+    exe: &str,
+    force: bool,
+    dry_run: bool,
+) -> Result<()> {
+    opencode_target(home, url, force, dry_run)?;
+    opencode_plugin_target(home, exe, force, dry_run)?;
+    match brain_dir {
+        Some(brain) => project_target(dir, brain, url, force, dry_run)?,
+        None => eprintln!(
+            "opencode: sem --brain-dir/BRAIN_DIR, pulando opencode.json do projeto (plugin+MCP instalados)"
+        ),
     }
     Ok(())
 }
@@ -905,7 +875,7 @@ const IDE_CHOICES: &[&str] = &["opencode", "kiro"];
 /// never fires. `PromptSubmit`/`AgentStop` are the reason this paragraph exists a
 /// second time: they were doc-sourced names, never fired by a real kiro, and the
 /// guard below passed them because the list said they were real.
-const KIRO_TRIGGERS: &[&str] = &[
+pub(crate) const KIRO_TRIGGERS: &[&str] = &[
     "UserPromptSubmit",
     "Stop",
     "SessionStart",
@@ -1063,6 +1033,38 @@ fn kiro_hook(exe: &str, name: &str, trigger: &str, event: &str) -> Result<serde_
     }))
 }
 
+/// SU-01a (ADR-1): agent-hooks + steering como arquivos estáticos versionados.
+///
+/// Fonte única em `hooks/kiro/` + `steering/`, embutidos no binário via
+/// `include_str!` para install hermético: o `setup kiro` funciona sem o
+/// checkout do repo por perto. O `command` (`brain-session.json`) continua
+/// gerado por [`kiro_hook_json`] (precisa do `exe` real); estes 3 são cópia
+/// byte-fiel. Qualquer reword evolui o arquivo-fonte sem rebuild de lógica —
+/// mas exige rebuild do binário para re-embutir (o teste
+/// `estaticos_copiados_sao_fieis_a_fonte` prende a fidelidade).
+pub const KIRO_STATIC_LEARNING: &str = include_str!("../../../hooks/kiro/brain-learning.json");
+pub const KIRO_STATIC_OPTIMIZER: &str =
+    include_str!("../../../hooks/kiro/brain-prompt-optimizer.json");
+pub const KIRO_STATIC_STEERING: &str = include_str!("../../../steering/brain-learning.md");
+
+/// SU-02a/D5: install completo deixa o pai do banco existindo.
+///
+/// `Store::open` (rusqlite `Connection::open`) não cria diretórios-pais, então
+/// sem isso D5 reprovaria todo install fresco — e o primeiro `brain store`
+/// falharia do mesmo jeito. `mkdir -p` vazio nunca clobbera; `dry_run` cria nada.
+fn ensure_db_parent(db: &str, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    if let Some(parent) = Path::new(db).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create db parent {}", parent.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Write `.kiro/hooks/brain-session.json` into `dir`.
 fn kiro_target(dir: &Path, exe: &str, force: bool, dry_run: bool) -> Result<()> {
     let path = dir.join(".kiro").join("hooks").join("brain-session.json");
@@ -1072,6 +1074,25 @@ fn kiro_target(dir: &Path, exe: &str, force: bool, dry_run: bool) -> Result<()> 
         WriteResult::Overwritten => println!("kiro: updated {} (.bak kept)", path.display()),
         WriteResult::SkippedExists => println!("kiro: exists, skipped (use --force) {}", path.display()),
         WriteResult::DryRun => {}
+    }
+    // SU-01a: os 3 estáticos (rel sem `..` por construção — contenção como
+    // `fs_guard`: nenhum join escapa de `dir`). Mesmo contrato do gerado:
+    // aditivo sem --force, `.bak` em overwrite, 0 writes em dry-run.
+    for (rel, content) in [
+        (".kiro/hooks/brain-learning.json", KIRO_STATIC_LEARNING),
+        (".kiro/hooks/brain-prompt-optimizer.json", KIRO_STATIC_OPTIMIZER),
+        (".kiro/steering/brain-learning.md", KIRO_STATIC_STEERING),
+    ] {
+        debug_assert!(!rel.contains(".."), "static rel must not climb: {rel}");
+        let dest = dir.join(rel);
+        match write_file(&dest, content, force, dry_run)? {
+            WriteResult::Created => println!("kiro: created {}", dest.display()),
+            WriteResult::Overwritten => println!("kiro: updated {} (.bak kept)", dest.display()),
+            WriteResult::SkippedExists => {
+                println!("kiro: exists, skipped (use --force) {}", dest.display())
+            }
+            WriteResult::DryRun => {}
+        }
     }
     Ok(())
 }
@@ -1167,11 +1188,19 @@ pub fn run_setup(o: &SetupOpts) -> Result<()> {
     if o.dry_run {
         println!("setup dry-run url={} exe={} db={}", url, exe, db);
     }
+    ensure_db_parent(&db, o.dry_run)?;
     for t in &targets {
         match t.as_str() {
             "opencode" => {
-                opencode_target(&home, &url, o.force, o.dry_run)?;
-                opencode_plugin_target(&home, &exe, o.force, o.dry_run)?;
+                let dir = match &o.dir {
+                    Some(d) => PathBuf::from(d),
+                    None => std::env::current_dir().context("cwd")?,
+                };
+                let brain = match &o.brain_dir {
+                    Some(b) => Some(PathBuf::from(b)),
+                    None => std::env::var("BRAIN_DIR").map(PathBuf::from).ok(),
+                };
+                install_opencode(&home, &dir, brain.as_deref(), &url, &exe, o.force, o.dry_run)?;
             }
             "kiro" => {
                 let dir = match &o.dir {
@@ -1671,30 +1700,25 @@ mod opencode_plugin {
     /// generated file has none, and a URL in a string would need a real JS parser to
     /// handle — which is the next line of defence, not this one.
     fn code_only(js: &str) -> String {
-        let mut out = String::new();
-        for chunk in js.split("/*") {
-            let first = chunk.split("*/").next().unwrap_or(chunk);
-            for line in first.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        out
+        super::plugin_code_only(js)
     }
 
-    /// T6.1: the documented shape — the `Plugin` export, the destructured arguments,
-    /// and the two session event names, all from `opencode.ai/docs/plugins/`.
+    /// SU-01b: forma verificada — o export `Plugin`, os args, e exatamente os 3
+    /// eventos com call site no runtime instalado (1.18.31). O teste antigo
+    /// afirmava `session.created`/`session.idle` a partir da doc — eventos sem
+    /// trigger, plugin silenciosamente morto (Bloco 4).
     #[test]
-    fn the_plugin_has_the_documented_shape() {
+    fn the_plugin_has_the_verified_shape() {
         let js = code_only(&opencode_plugin_js("/usr/bin/brain"));
         for expected in [
             "export const Plugin = async (",
-            "session.created",
-            "session.idle",
+            "experimental.chat.system.transform",
+            "chat.message",
+            "experimental.session.compacting",
             "client",
             "directory",
         ] {
-            assert!(js.contains(expected), "the documented shape needs {expected:?}:\n{js}");
+            assert!(js.contains(expected), "the verified shape needs {expected:?}:\n{js}");
         }
     }
 
@@ -1823,7 +1847,10 @@ mod opencode_plugin {
     #[test]
     fn a_path_with_a_quote_cannot_break_the_literal() {
         let js = opencode_plugin_js("/opt/my \"brain\"/bin");
-        assert!(js.contains(r#"const BRAIN_BIN = "/opt/my \"brain\"/bin";"#), "{js}");
+        assert!(
+            js.contains(r#"const BRAIN_BIN = process.env.BRAIN_BIN || "/opt/my \"brain\"/bin";"#),
+            "{js}"
+        );
         let d = std::env::temp_dir().join(format!("brain-oc-q-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("tmp");
@@ -1834,6 +1861,268 @@ mod opencode_plugin {
             assert!(o.status.success(), "a quoted path must still parse:\n{}", String::from_utf8_lossy(&o.stderr));
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod opencode_su01b {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn hook_keys(js: &str) -> BTreeSet<String> {
+        super::plugin_hook_keys(js).into_iter().collect()
+    }
+
+    fn code_no_comments(js: &str) -> String {
+        super::plugin_code_only(js)
+    }
+
+    /// SU-01b BDD(1) eventos: o instalado assina exatamente os 3 verificados.
+    #[test]
+    fn instalado_assina_so_os_3_verificados() {
+        let keys = hook_keys(&opencode_plugin_js("/usr/bin/brain"));
+        let expected: BTreeSet<String> =
+            OPENCODE_VERIFIED_EVENTS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(keys, expected, "instalado deve assinar só verificados");
+    }
+
+    /// SU-01b negação (T3 do .mjs): nenhum morto conhecido no código instalado.
+    #[test]
+    fn instalado_nega_os_7_mortos() {
+        let code = code_no_comments(&opencode_plugin_js("/usr/bin/brain"));
+        for dead in OPENCODE_DEAD_EVENTS {
+            assert!(
+                !code.contains(&format!("\"{dead}\"")),
+                "morto conhecido no instalado: {dead}"
+            );
+        }
+    }
+
+    /// SU-01b fidelidade (padrão SU-01a): com `exe == "brain"` o instalado é
+    /// byte-fiel à fonte estática — zero drift gerador↔fonte.
+    #[test]
+    fn instalado_fiel_ao_estatico() {
+        assert_eq!(
+            opencode_plugin_js("brain"),
+            OPENCODE_STATIC_PLUGIN,
+            "gerador divergiu da fonte hooks/opencode/brain-session.js"
+        );
+    }
+
+    /// SU-01b: a agulha de substituição existe exatamente 1x na fonte; sem ela
+    /// o `exe` seria silenciosamente ignorado (fallback `"brain"` sempre).
+    #[test]
+    fn agulha_de_exe_existe_1x_na_fonte() {
+        assert_eq!(
+            OPENCODE_STATIC_PLUGIN.matches(OPENCODE_BIN_FALLBACK_NEEDLE).count(),
+            1,
+            "template mudou e o exe não seria mais embutido"
+        );
+        let js = opencode_plugin_js("/real/brain");
+        assert!(js.contains(r#"process.env.BRAIN_BIN || "/real/brain""#), "{js}");
+    }
+
+    fn scratch(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base =
+            std::env::temp_dir().join(format!("brain-su01b-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let dir = base.join("proj");
+        let brain = base.join("brain-checkout");
+        for d in [&home, &dir, &brain] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        (home, dir, brain)
+    }
+
+    fn installed_files(home: &Path, dir: &Path) -> [PathBuf; 3] {
+        [
+            home.join(".config/opencode/plugins/brain-session.js"),
+            home.join(".config/opencode/mcp.json"),
+            dir.join("opencode.json"),
+        ]
+    }
+
+    /// SU-01b BDD(1): install limpo registra plugin + MCP + skill ref.
+    #[test]
+    fn merge_limpo_registra_plugin_e_skill_ref() {
+        let (home, dir, brain) = scratch("clean");
+        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, false)
+            .unwrap();
+        let [plugin, mcp, proj] = installed_files(&home, &dir);
+        for p in [&plugin, &mcp, &proj] {
+            assert!(p.is_file(), "install limpo deve criar {}", p.display());
+        }
+        // plugin: só verificados (prova de eventos no instalado real, não no template).
+        let text = std::fs::read_to_string(&plugin).unwrap();
+        let keys = hook_keys(&text);
+        let expected: BTreeSet<String> =
+            OPENCODE_VERIFIED_EVENTS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(keys, expected);
+        // skill ref: MCP + 2 instructions, sem duplicar estrutura.
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&proj).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+        let inst = v["instructions"].as_array().expect("instructions");
+        assert_eq!(inst.len(), 2, "skill ref (SKILL.md + BRAIN.MCP.md): {inst:?}");
+        assert!(inst.iter().all(|e| e.as_str().unwrap().contains(".agents/")));
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// SU-01b BDD(2) + DoD idempotente: rodar 2x = mesmo resultado, sem `.bak`.
+    #[test]
+    fn re_run_nao_duplica_nem_regrava() {
+        let (home, dir, brain) = scratch("rerun");
+        let run = || {
+            install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, false)
+                .unwrap();
+        };
+        run();
+        let before: Vec<String> = installed_files(&home, &dir)
+            .iter()
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        run();
+        let after: Vec<String> = installed_files(&home, &dir)
+            .iter()
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        assert_eq!(before, after, "re-run deve ser idêntico");
+        // skill ref não duplicou.
+        let v: serde_json::Value = serde_json::from_str(&after[2]).unwrap();
+        assert_eq!(v["instructions"].as_array().unwrap().len(), 2);
+        // skip sem --force: nenhum .bak criado.
+        for p in installed_files(&home, &dir) {
+            assert!(
+                !p.with_extension("bak").exists(),
+                "re-run sem --force não deve gerar .bak em {}",
+                p.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// SU-01b BDD(3): dry-run = 0 writes.
+    #[test]
+    fn dry_run_zero_writes() {
+        let (home, dir, brain) = scratch("dry");
+        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, true)
+            .unwrap();
+        for p in installed_files(&home, &dir) {
+            assert!(!p.exists(), "dry-run não deve escrever {}", p.display());
+        }
+        assert!(
+            !home.join(".config/opencode").exists(),
+            "dry-run não deve criar nem diretório"
+        );
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// SU-01b fail-open: sem brain-dir, plugin+MCP instalam e opencode.json é
+    /// pulado com aviso (não erro) — o `setup opencode` puro do E2E continua verde.
+    #[test]
+    fn sem_brain_dir_instala_plugin_e_mcp_sem_erro() {
+        let (home, dir, _brain) = scratch("nobrain");
+        install_opencode(&home, &dir, None, "http://localhost:8321/sse", "/bin/brain", false, false)
+            .unwrap();
+        let [plugin, mcp, proj] = installed_files(&home, &dir);
+        assert!(plugin.is_file() && mcp.is_file());
+        assert!(!proj.exists(), "sem brain-dir não há rel p/ skill ref");
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod kiro_static_copy {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("brain-kiro-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// SU-01a BDD(1): install limpo copia os 4 estáticos (1 gerado + 2 agent + steering).
+    fn expected_files() -> [&'static str; 4] {
+        [
+            ".kiro/hooks/brain-session.json",
+            ".kiro/hooks/brain-learning.json",
+            ".kiro/hooks/brain-prompt-optimizer.json",
+            ".kiro/steering/brain-learning.md",
+        ]
+    }
+
+    #[test]
+    fn install_limpo_copia_os_4_estaticos() {
+        let dir = tmpdir("clean");
+        kiro_target(&dir, "/usr/bin/brain", false, false).unwrap();
+        for rel in expected_files() {
+            assert!(dir.join(rel).is_file(), "install limpo deve criar {rel}");
+        }
+        // session gerado chama o binário; agent-hooks são estáticos fiéis à fonte.
+        let session = std::fs::read_to_string(dir.join(expected_files()[0])).unwrap();
+        assert!(session.contains("hook --event session"), "session deve chamar brain hook");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_sem_force_preservado_e_com_force_bak() {
+        let dir = tmpdir("custom");
+        kiro_target(&dir, "/usr/bin/brain", false, false).unwrap();
+        // operador customiza um estático
+        let target = dir.join(expected_files()[1]);
+        std::fs::write(&target, "{\"custom\": true}").unwrap();
+        // sem --force: preserva
+        kiro_target(&dir, "/usr/bin/brain", false, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"custom\": true}");
+        // com --force: sobrescreve + .bak com o custom
+        kiro_target(&dir, "/usr/bin/brain", true, false).unwrap();
+        assert!(std::fs::read_to_string(&target).unwrap().contains("brain-learning"));
+        assert_eq!(
+            std::fs::read_to_string(target.with_extension("bak")).unwrap(),
+            "{\"custom\": true}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dry_run_escreve_zero_arquivos() {
+        let dir = tmpdir("dry");
+        kiro_target(&dir, "/usr/bin/brain", false, true).unwrap();
+        for rel in expected_files() {
+            assert!(!dir.join(rel).exists(), "dry-run não deve escrever {rel}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_garante_pai_do_banco_mas_dry_run_nao() {
+        let base = tmpdir("dbparent");
+        let db = base.join("sub/db/brain.db");
+        ensure_db_parent(db.to_str().unwrap(), false).unwrap();
+        assert!(base.join("sub/db").is_dir(), "install cria o pai do banco");
+        let db2 = base.join("dry/db/brain.db");
+        ensure_db_parent(db2.to_str().unwrap(), true).unwrap();
+        assert!(!base.join("dry").exists(), "dry-run cria nada");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn estaticos_copiados_sao_fieis_a_fonte() {
+        let dir = tmpdir("fiel");
+        kiro_target(&dir, "/usr/bin/brain", false, false).unwrap();
+        for rel in [expected_files()[1], expected_files()[2], expected_files()[3]] {
+            let installed = std::fs::read_to_string(dir.join(rel)).unwrap();
+            let src = if rel.ends_with("brain-learning.json") {
+                KIRO_STATIC_LEARNING
+            } else if rel.ends_with("brain-prompt-optimizer.json") {
+                KIRO_STATIC_OPTIMIZER
+            } else {
+                KIRO_STATIC_STEERING
+            };
+            assert_eq!(installed, src, "{rel} deve ser byte-fiel à fonte");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1930,6 +2219,13 @@ mod review_fixes {
         // A file without the constant yields nothing rather than a wrong answer.
         std::fs::write(&f, "// nothing here\n").expect("write");
         assert_eq!(stale_constant(&f, "BRAIN_BIN"), None);
+        // SU-01b shape (env com fallback) lê o fallback, como o instalado real.
+        std::fs::write(
+            &f,
+            "const BRAIN_BIN = process.env.BRAIN_BIN || \"/new/brain\";\n",
+        )
+        .expect("write");
+        assert_eq!(stale_constant(&f, "BRAIN_BIN").as_deref(), Some("/new/brain"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

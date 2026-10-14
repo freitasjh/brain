@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "brain-learning",
+      "trigger": "Stop",
+      "description": "Ao fim de cada turno, lembra o agente de curar aprendizado durável no brain via MCP (skip se trivial).",
+      "action": {
+        "type": "agent",
+        "prompt": "Antes de encerrar, avalie o turno: gerou aprendizado durável (decisão com motivo, bug com causa raiz, convenção, armadilha, mudança de contrato)? Se NÃO — só leitura, pergunta respondida ou mudança trivial — skip: encerre sem gravar. Se SIM — grave via MCP brain_store (nunca via CLI; se o MCP estiver fora, avise e siga sem bloquear a sessão): sessoes/<proj>/<AAAA-MM-DD>-<assunto> (resumo) + estudos/<proj|global>/<assunto> (se aprendeu algo novo, com frontmatter tags/topico/nivel/fonte) + regras|arquitetura/<proj|global>/<assunto> (se durável). path sempre relativo sem repetir layer/scope; scope projetos se específico do projeto ativo (via git/config), global se universal; prefira atualizar nota existente a duplicar. Valide o estudo pelo loop de qualidade da skill brain (.agents/skills/brain/SKILL.md) antes de considerar pronto."
+      }
+    }
+  ]
+}

@@ -718,7 +718,14 @@ fn setup_opencode_installs_the_session_plugin() {
         .unwrap_or_else(|e| panic!("the plugin must be installed at {}: {e}\n{}", path.display(), out(&o)));
     let code = plugin_code(&w.home());
     assert!(code.contains("export const Plugin"), "the documented export:\n{code}");
-    assert!(code.contains("session.created"), "and the documented event:\n{code}");
+    // SU-01b: só eventos verificados no runtime instalado (Bloco 4, OC-01).
+    for verified in [
+        "experimental.chat.system.transform",
+        "chat.message",
+        "experimental.session.compacting",
+    ] {
+        assert!(code.contains(verified), "the verified event {verified}:\n{code}");
+    }
     // T6.3: the Rust binary, not the Python hook — and MUST FIX 1: an id per call.
     assert!(!code.contains("brain-hook.py"), "R-08: the Python hook is off the path:\n{code}");
     assert!(code.contains("--payload"), "MUST FIX 1: each session needs an id:\n{code}");
@@ -728,6 +735,14 @@ fn setup_opencode_installs_the_session_plugin() {
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp).expect("mcp.json")).expect("mcp.json parses");
     assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+
+    // SU-01b BDD(1): skill ref no opencode.json do projeto (setup roda em proj/).
+    let proj: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(w.proj().join("opencode.json")).expect("proj opencode.json"),
+    )
+    .expect("proj opencode.json parses");
+    let inst = proj["instructions"].as_array().expect("instructions");
+    assert_eq!(inst.len(), 2, "skill ref (SKILL.md + BRAIN.MCP.md): {inst:?}");
 }
 
 /// Idempotence, and the neighbour. Two runs must leave exactly one plugin, byte-identical,
@@ -953,6 +968,11 @@ fn the_kiro_command_records_every_session_it_is_run_for() {
 
 /// The same property for the opencode artifact, exercised by running the plugin's
 /// hook under `node` three times against the real binary.
+///
+/// SU-01b: o driver agora é `experimental.session.compacting` (verificado,
+/// OC-02) — `session.created` era evento morto sem trigger. Cada compactação
+/// registra um handoff `session-end` com id próprio (`Date.now()` + contador
+/// por chamada), então 3 chamadas = 3 seções mesmo no mesmo milissegundo.
 #[test]
 fn the_opencode_plugin_sends_a_distinct_id_per_invocation() {
     let w = World::new("ocid");
@@ -982,7 +1002,7 @@ const run = promisify(execFile);
 // Bun's shell does and what the previous version of this mock got wrong: it concatenated
 // the strings and handed the result to `/bin/sh`, so `${{""}}` produced *nothing* rather
 // than an empty argument. The plugin passes `--question ${{question ?? ""}}`, and
-// `session.created` legitimately has no question, so the mock turned a valid invocation
+// compacting legitimately has no question, so the mock turned a valid invocation
 // into `... --question ` — a flag with no value, which clap refuses.
 //
 // Building `argv` and calling `execFile` directly also removes the shell from the path
@@ -1014,7 +1034,8 @@ const hooks = await Plugin({
   $,
   directory: process.env.BRAIN_TEST_DIR,
 });
-for (let i = 0; i < 3; i++) await hooks["session.created"]({});
+for (let i = 0; i < 3; i++) await hooks["experimental.session.compacting"](
+  { sessionID: "ses_1" }, { context: [], prompt: undefined });
 console.log("DONE");
 "#;    let d = w.root.join("harness");
     std::fs::create_dir_all(&d).expect("harness dir");
@@ -1178,10 +1199,12 @@ fn a_stale_binary_in_the_plugin_is_reported() {
     let w = World::new("stale-bin");
     w.setup_ok(&["opencode", "--yes"]);
     // A plugin left behind by an install whose binary has since moved.
+    // (Rewrites to the pre-SU-01b literal shape — also proving the reader
+    // still understands an old installed file on upgrade.)
     let path = plugin_path(&w.home());
     let edited = std::fs::read_to_string(&path)
         .expect("plugin")
-        .replace("const BRAIN_BIN = \"", "const BRAIN_BIN = \"/gone/brain\"; const OLD = \"");
+        .replace("process.env.BRAIN_BIN || ", "\"/gone/brain\"; // ");
     std::fs::write(&path, edited).expect("edit");
     let before = std::fs::read_to_string(&path).expect("plugin");
 
@@ -1520,15 +1543,16 @@ fn split_blocks(text: &str) -> (String, String) {
     )
 }
 
-/// **RF-04, opencode side.** The question comes from the SDK's documented message
-/// events: `message.updated` carries `properties.info` (discriminated by
-/// `role: "user"`) and `message.part.updated` carries `properties.part` (the text).
-/// Neither event alone carries both, so the plugin pairs them by message id.
+/// **RF-04, opencode side (SU-01b).** The question comes from the verified
+/// `chat.message` read: `output.message.role == "user"` + `parts[]` text
+/// (sem mutação). `message.updated`/`message.part.updated` eram eventos mortos
+/// sem trigger no runtime instalado (Bloco 4) — o pareamento por message id
+/// morreu com eles.
 ///
-/// Driven with the two events' real payload shapes, in the order that makes the
-/// requirement hard: the **part arrives first**, and the user's text is only recognised
-/// as the user's once `message.updated` confirms the role. An assistant message with the
-/// same shape must not be injected — that is the failure this pairing exists to prevent.
+/// Driven with the new payload shape: a user message carrying the question,
+/// then an assistant message pointing at a DIFFERENT note, then a streaming
+/// duplicate of the user message. The first `chat.message` records once
+/// (once por sessão); the assistant's text must never become the question.
 #[test]
 fn the_opencode_plugin_injects_the_user_message_and_never_the_assistants() {
     let w = World::new("p4ocmsg");
@@ -1569,27 +1593,21 @@ const hooks = await Plugin({
   client: { app: { log: () => {} } }, $, directory: process.env.BRAIN_TEST_DIR,
 });
 
-// Part BEFORE the role — the ordering that requires the id pairing to work.
-await hooks["message.part.updated"]({ event: { properties: { part: {
-  id: "prt_1", sessionID: "ses_1", messageID: "msg_user", type: "text",
-  text: "kebab-case nos caminhos" } } } });
-await hooks["message.updated"]({ event: { properties: { info: {
-  id: "msg_user", sessionID: "ses_1", role: "user" } } } });
-
-// An assistant message, same part shape, whose text points at a DIFFERENT note. If the
-// plugin took it, the injected set would be the auth note and not the naming one, so
-// both halves of the assertion below discriminate. An assistant message repeating the
-// user's own words would prove nothing either way.
-await hooks["message.part.updated"]({ event: { properties: { part: {
-  id: "prt_2", sessionID: "ses_1", messageID: "msg_ai", type: "text",
-  text: "token" } } } });
-await hooks["message.updated"]({ event: { properties: { info: {
-  id: "msg_ai", sessionID: "ses_1", role: "assistant" } } } });
-
-// A streaming update for the same user message must not inject twice.
-await hooks["message.part.updated"]({ event: { properties: { part: {
-  id: "prt_1b", sessionID: "ses_1", messageID: "msg_user", type: "text",
-  text: "kebab-case nos caminhos" } } } });
+// The user's question records once; the assistant's text never becomes a
+// question; a streaming duplicate of the user message does not re-record
+// (once por sessão — o segundo evento não re-spawna).
+await hooks["chat.message"](
+  { sessionID: "ses_1" },
+  { message: { role: "user" }, parts: [{ type: "text", text: "kebab-case nos caminhos" }] },
+);
+await hooks["chat.message"](
+  { sessionID: "ses_1" },
+  { message: { role: "assistant" }, parts: [{ type: "text", text: "token" }] },
+);
+await hooks["chat.message"](
+  { sessionID: "ses_1" },
+  { message: { role: "user" }, parts: [{ type: "text", text: "kebab-case nos caminhos" }] },
+);
 console.log("DONE");
 "#;
     std::fs::write(d.join("harness.js"), harness).expect("harness");
@@ -1619,7 +1637,12 @@ console.log("DONE");
 }
 
 /// The negative half, kept separate because it is the half that can be wrong silently:
-/// an assistant message alone must not produce a session-start inject at all.
+/// an assistant message alone must not drive a search inject.
+///
+/// SU-01b: com pergunta vazia o hook degrada para panorama do projeto (sem busca),
+/// então o discriminante é o formato da saída — panorama presente, headers de busca
+/// ausentes. Se o texto do assistente ("token") virasse pergunta, a saída teria o
+/// header `--- Brain context (projetos) ---` com a nota auth.
 #[test]
 fn the_opencode_plugin_does_not_inject_from_an_assistant_message() {
     let w = World::new("p4ocai");
@@ -1655,11 +1678,12 @@ const $ = (strings, ...values) => {
 const hooks = await Plugin({
   client: { app: { log: () => {} } }, $, directory: process.env.BRAIN_TEST_DIR,
 });
-await hooks["message.updated"]({ event: { properties: { info: {
-  id: "msg_ai", sessionID: "ses_1", role: "assistant" } } } });
-await hooks["message.part.updated"]({ event: { properties: { part: {
-  id: "prt_2", sessionID: "ses_1", messageID: "msg_ai", type: "text",
-  text: "token" } } } });
+// Assistant text only: role filter drops it as a question, so the hook degrades
+// to the project panorama — never a "token"-driven search.
+await hooks["chat.message"](
+  { sessionID: "ses_1" },
+  { message: { role: "assistant" }, parts: [{ type: "text", text: "token" }] },
+);
 console.log("DONE");
 "#;
     std::fs::write(d.join("harness.js"), harness).expect("harness");
@@ -1675,16 +1699,14 @@ console.log("DONE");
         .expect("run harness");
     let text = out(&o);
     assert!(text.contains("DONE"), "the plugin must not throw:\n{text}");
-    // Nothing was recorded, because nothing was injected. The assistant's text ("token")
-    // names the auth note directly, so a plugin that used it would have recorded here.
-    let read = Command::new(bin())
-        .arg("--db").arg(w.db()).arg("read").arg("sessoes")
-        .arg(format!("hive/{}", w.today_utc()))
-        .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)
-        .output().expect("read");
-    let note = String::from_utf8_lossy(&read.stdout).into_owned();
+    // Empty-question path taken: panorama shown, no search driven by "token".
+    // (The auth note names "token" directly, so a search inject would carry it.)
     assert!(
-        !note.contains("session-start"),
-        "an assistant message must not trigger a session-start inject:\n{note}"
+        text.contains("panorama, sem pergunta"),
+        "an assistant message must degrade to the project panorama:\n{text}"
+    );
+    assert!(
+        !text.contains("--- Brain context (projetos) ---") && !text.contains("--- Brain context (global) ---"),
+        "the assistant's text must not drive a search inject:\n{text}"
     );
 }

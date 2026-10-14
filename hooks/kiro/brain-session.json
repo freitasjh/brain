@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "brain-prompt",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "brain hook --event session-start --payload \"{\\\"id\\\":\\\"kiro-session-start-$$\"}\" --question \"$USER_PROMPT\""
+      }
+    },
+    {
+      "name": "brain-agent-stop",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "brain hook --event session-end --payload \"{\\\"id\\\":\\\"kiro-session-end-$$\"}\""
+      }
+    }
+  ]
+}

@@ -447,6 +447,20 @@ As camadas `arquitetura`, `regras` e `estudos` usam **scope** para separar conte
 
 ---
 
+### Roteiro deepsearch
+
+Fonte única do roteiro de busca (ADR-2: hooks e steering só apontam para cá,
+nunca copiam estes passos). Execute antes de codar, sempre:
+
+1. Query literal: use o prompt do usuário sem paráfrase + 2 variações de
+   domínio. `brain_search(<literal>, top_k=10)` sem filtro primeiro (varredura larga).
+2. Afunile: repita com `layer`/`scope` do domínio (`scope="projetos"`,
+   `project="<nome>"`); depois contraponto global (`scope="global"`, top_k=3).
+3. Leia integral: `brain_read` nos hits que decidem; nunca afirme pelo snippet.
+4. Sintetize: tabela decisão→fonte (`layer/scope/path`) ou declare "sem
+   contexto" — busca vazia não é falha, é ausência registrada.
+5. Grave depois: `brain_store` imediato após cada decisão (não espera fim de sessão).
+
 ### Antes de codificar
 Sempre consulte o cérebro para contexto relevante:
 

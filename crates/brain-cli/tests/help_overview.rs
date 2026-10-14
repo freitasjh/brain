@@ -3,7 +3,7 @@
 //!
 //! Two things are asserted here, and the split matters:
 //!
-//! - **What the CLI promises** — the 5 group titles, the 20 one-liners inside them
+//! - **What the CLI promises** — the 5 group titles, the 21 one-liners inside them
 //!   in the order the ux-designer froze, none of them leaking markdown, all of them
 //!   inside 80 columns. That is a contract, and a typo in any one-liner is a bug an
 //!   operator reads.
@@ -67,7 +67,7 @@ fn split_row(row: &str) -> (&str, &str) {
     (name, about.trim_start())
 }
 
-/// The 20 commands in the order the ux-designer froze, paired with the one-liner
+/// The 21 commands in the order the ux-designer froze, paired with the one-liner
 /// each must carry. `help` (clap's own) is excluded on purpose: it is clap's text,
 /// not ours, and this test is not the place to police another crate.
 const EXPECTED: &[(&str, &str)] = &[
@@ -91,6 +91,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ("hook", "Registra um evento do agente na sessão"),
     ("project", "Gerencia projetos e vínculos de notas"),
     ("setup", "Instala MCP, regras e serviço (uso único)"),
+    ("doctor", "Roda o diagnóstico D1–D6 da instalação (verde = pronto)"),
 ];
 
 /// RF-01. The 5 titles, in the frozen order.
@@ -135,7 +136,7 @@ const GROUPED: &[(&str, &[&str])] = &[
     ("Memória", &["checkpoints", "restore", "delete", "export", "backup"]),
     ("Manutenção", &["forget-sweep", "reindex", "migrate"]),
     ("Servidor", &["server", "serve-mcp", "serve", "hook"]),
-    ("Projetos e setup", &["project", "setup"]),
+    ("Projetos e setup", &["project", "setup", "doctor"]),
 ];
 
 /// Each command appears exactly once, inside the group that claims it.

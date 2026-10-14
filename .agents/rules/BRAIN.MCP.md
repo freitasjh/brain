@@ -118,6 +118,11 @@ brain_search("padrões de código", scope="global")  # lições universais
 **Motivação**: o brain pode conter decisões arquiteturais, regras de negócio
 e convenções de projetos anteriores que evitam retrabalho e inconsistências.
 
+> Roteiro de busca em 5 passos (fonte única): skill brain,
+> `.agents/skills/brain/SKILL.md` § Roteiro — query literal → afunila por
+> layer/scope → `brain_read` integral → tabela decisão→fonte ou "sem contexto".
+> Esta ponte não copia os passos; se divergir, vale a skill.
+
 ### 🔴 Regra 2: SEMPRE registre decisões importantes
 
 **Toda** decisão arquitetural ou regra de negócio descoberta DEVE ser
