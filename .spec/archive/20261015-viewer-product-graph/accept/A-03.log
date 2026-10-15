@@ -1,0 +1,5 @@
+# A-03 (RF-03, INV-02) — P1-03
+
+BASELINE (antes): FAIL — sem handler Esc.
+PÓS-EDIT: keydown global Escape → guarda #drawer (se existir e visível, retorna sem limpar — drawer primeiro); senão volta a Buscar + clearSearch() (input vazio + idle + foco no input). Esc em idle vazio = no-op seguro.
+A-03: PASS (estático). Dinâmico no harness.

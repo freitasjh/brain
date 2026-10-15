@@ -1,0 +1,5 @@
+# A-07 (RF-07, INV-04) + A-08 (RF-08) — P1-06
+
+BASELINE: A-07 PASS (6 hex), A-08 FAIL (sem 0.55, sem legenda).
+PÓS-EDIT: legenda HTML fixa com os 6 hex (#0d1117 #c9d1d9 #58a6ff #3fb950 #f0883e #484f58, todos no fonte); hub quadrado Guia 6px; nota círculo 3px + anel camada; órfã vazada Orfã; EDGE_ALPHA_BASE=0.35 / EDGE_ALPHA_HOVER=0.55 (grep '0.55'≥1) aplicado nas arestas do hover/selecionado.
+A-07: PASS. A-08: PASS. Visual confirmado no screenshot do harness.

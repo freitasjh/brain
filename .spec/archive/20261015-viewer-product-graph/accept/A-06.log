@@ -1,0 +1,5 @@
+# A-06 (RF-06, INV-03) — P1-05
+
+BASELINE (antes): FAIL — sem cap, sem contador.
+PÓS-EDIT: LABEL_CAP=40 (grep '40'≥1); conjunto rotulável top-40 por grau + hubs; por frame: hubs|rotuláveis|sel/hover até 40, anti-colisão por bbox (measureText, arrays paralelos — sem campo fantasma p/ o guard); window.__labelCount observável; zoom>1.5 NÃO fura o teto (cap vale por frame, pan/zoom incluso).
+A-06: PASS (estático). Contador + overlap 0/40 verificados no harness.

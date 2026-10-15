@@ -1,0 +1,9 @@
+# P0-01 — Gates baseline (TDD FIRST, antes de qualquer edição produto)
+
+Data: 2026-10-15 · Batch 1 viewer-product-graph
+Comando: cargo test -p brain-web
+Resultado: 24 passed, 0 failed (suite verde, inclui guards viewer wiring)
+Baseline diff: git diff --name-only vazio (tracked limpo); untracked: .spec/viewer-product-graph/, data/brain.db.bak
+Grep baseline viewer/index.html: onclick=10 · data-toast=0 · encodeURIComponent=2 · escapeHtml=3 · Abort=2 · '40'=0 · '0.55'=0 · hex 6/6 · aria-live=0 · eval|Function|document.write|outerHTML=0 · src-http=0 · aria-selected=0 · __labelCount=0
+
+Veredito: PASS (suite verde + diff produto limpo). P1 desbloqueado.

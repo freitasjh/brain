@@ -1,0 +1,12 @@
+# P0-02 — Fixtures locais + ambiente (TDD FIRST)
+
+Fixtures (seed fixo, sort_keys, determinísticas — reload idêntico):
+- fixtures/fixture-graph-500.json: 500 nodes (499 notes + 1 hub projeto:load), 238 edges, seed 42
+  sha256 fce640a073bd73275658510f444a3be4a83cd9416dde2a3f0ac900fb54ef3324
+- fixtures/fixture-graph-1501.json: 1501 nodes (1500 notes + 1 hub), 715 edges, seed 7
+  sha256 ae98d827d9f94c180b8e1892fdf08c6253bddec006c1fd780ed70d1a010793d0
+- fixtures/meta-template.json: {chromium, viewport, corpus_sha256, time_to_interactive_s} — preencher em A-05
+Formato = payload /api/graph verbatim: nodes {id,kind,label,layer} (hub layer null), edges {from,to,kind}, dangling, projects.
+Viewport normado: 1280x720 · Chromium: a registrar no harness (step 6).
+
+Veredito: PASS (fixtures criadas ANTES de qualquer medição; A-05/A-06/A-09 contra viewer atual = FAIL/N-A, provam que o aceite mede algo).

@@ -1,0 +1,28 @@
+# HARNESS Batch 2 P2-01..P2-03 (scratch H3/H5)
+
+Scratch: /tmp/tmp.ntGhj6bNpF/brain.db (3 notas, coverage 0%), viewer :41365
+efêmera (anúncio pós-bind), BRAIN_OLLAMA_URL dead. Produção 8321/8322 intocada.
+
+## UP
+- backend UP (viewer 200 /api/status), frontend UP (title PT-BR, lang=pt-BR)
+- Badge: `🟡 Degraded · 3 notes · 3 chunks · embedding 0% (3 awaiting embed)` (P2-02)
+- Busca `harness` → 2 cards clicáveis, `Chunk: 0` escapado (Batch1-1 fechado)
+- Click card → drawer dialog modal, foco no Fechar, conteúdo = /api/read (P2-01)
+- Esc → drawer fechado + foco no invocador (data-read=0) + query intacta (INV-02)
+- XSS `<img onerror>`: 0 img, 0 script, texto literal (A-SEC-01 drawer)
+- Título drawer: `regras/global/xss-probe.md` (fix layer-duplo pós-reload)
+- 360px emulate: panel 360×448 (70vh), overflowX 0, Esc fecha (E-08)
+- console 0 msgs; network 4/4 2xx (status/search/read + doc, read com %2F)
+- Lighthouse mobile snapshot: a11y 94 (≥90), best-practices 100 (P2-03)
+- screenshot: /tmp/opencode/harness-p2-360.png
+
+## DOWN
+- viewer :41365 morto (lsof vazio); produção intacta; sem restart em 8321/8322
+- `cargo test -p brain-web` 24/0; diff produto só viewer/index.html
+- data/brain.db.bak untracked pré-existente (Batch1-2, fora do escopo P2, sem toque)
+
+## Limitações honestas
+- E-04 reduce-motion: branch JS `reduced` (physics 30× + draw, zero RAF) + CSS
+  `@media prefers-reduced-motion` verificados por leitura; chrome-devtools sem
+  emulação de reduce-motion → 0-RAF runtime não medido (P3 pode medir via CDP).
+- Lighthouse modo snapshot (não navigation); SEO 75 irrelevante (tool local).

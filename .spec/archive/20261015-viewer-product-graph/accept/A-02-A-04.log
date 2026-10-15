@@ -1,0 +1,5 @@
+# A-02 (RF-02) + A-04 (RF-04, INV-05) — P1-02
+
+BASELINE (antes): A-02 FAIL (sem banner, erro cru, sem retry); A-04 PASS (toast 0).
+PÓS-EDIT: search() idle→loading(role=status spinner)→results|empty(sugestão fixa EC-01 verbatim)|error(banner inline + retry); banner por view (banner-search/explore/graph, aria-live polite); erros via textContent (showBanner) ou escapeHtml; results+empty nunca simultâneos; grep data-toast==0; onclick==0.
+A-02: PASS. A-04: PASS. Dinâmico (500/timeout → banner+retry) no harness.

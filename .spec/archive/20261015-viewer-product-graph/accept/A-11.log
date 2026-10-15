@@ -1,0 +1,10 @@
+# A-11 (RF-11, SEC-01/SEC-04, H-01) — P2-01
+
+BASELINE (pré-edit, viewer pós-Batch1): FAIL.
+- `grep drawer`: 9 hits, todos em comentário/guard (`#drawer hidden`, `clearSearch` comment, Esc guard `getElementById('drawer')`) — nenhum elemento `#drawer` no DOM, nenhum CSS drawer/bottom-sheet (`bottom-sheet`: 0 hits).
+- Click nó/resultado: `readNote` renderiza inline em `#results` (troca de tab + innerHTML), não abre drawer; sem foco-Esc ao invocador (guard retorna sem fechar nada); 360px sem bottom-sheet.
+- Herdado Batch1-1: `Score: ... | Chunk: ${item.chunk_index}` interpola número cru (sem `escapeHtml(String(...))`).
+- `onclick=`: 0; `encodeURIComponent`: 2 (`/api/read`, `/api/graph`); `escapeHtml`: 13.
+
+PÓS-EDIT: drawer `#drawer role=dialog aria-modal aria-labelledby=drawer-title` + CSS bottom-sheet `@media 480px` + `data-read`/`data-browse` delegados + `encodeURIComponent(id)` + corpo `renderNoteHtml` escapado + Esc→`closeDrawer()`→foco invocador + tabs `overflow-x:auto` + `Chunk: escapeHtml(String(...))`.
+A-11: PASS (código). Greps: `onclick=`==0, `encodeURIComponent`==3, `escapeHtml`==15, `bottom-sheet`==2, `drawer-close`==3. JS syntax OK (node vm.Script, 34343 chars). `cargo test -p brain-web` 24/0. Harness funcional pendente abaixo (E-08 em 360px).

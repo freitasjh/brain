@@ -1,0 +1,53 @@
+# E-01..E-08 — P3-01 edge cases (TDD: estado pós-Batch2+polish)
+# Data: 2026-10-15 | viewer/index.html only | scratch VP=42455 MP=51101 (kill OK, prod 8321/8322 intacta)
+
+E-01 EC-01 empty verbatim: PASS
+  evidência: viewer/index.html:617 `<span>Tente um termo mais amplo ou verifique o filtro de projeto</span>`
+  grep -c verbatim = 1. Sem variação criativa por estado.
+
+E-02 EC-02 down/timeout→banner+offline+idle recuperável: PASS
+  evidência: apiFetch 3 s (AbortSignal.timeout + fallback AbortController+setTimeout, :167-181);
+    badgeOnFetchError AbortError/TypeError → offline (:199-203); checkStatus !ok → degraded+status (:381-389);
+    catch → offline (:431-435); banner error+retry em search/browse/graph; scratch: kill→curl fail→badge offline (código lido + HARNESS-batch2 cobre down).
+  Batch2-🟡#2 (checkStatus sem else) CORRIGIDO: else !ok em :381-389.
+
+E-03 EC-03 1501 freeze+anúncio+deriva 0.2×: PASS (estático)
+  evidência: GRAPH_FROZEN_AT=1500 (:256), freezeEl.textContent anúncio (:788-792),
+    frozenAt→maxTicks=FROZEN_TICKS (:793), frame: frozen→draw+stop (:977-980), senão physics(0.2) (:975);
+    fixture-graph-1501.json nodes=1501 verificado. Sem execução browser neste batch (A-09.log cobre visual).
+
+E-04 motion estático reduce-motion: PASS (estático)
+  evidência: `reduced = matchMedia('(prefers-reduced-motion: reduce)')` (:712);
+    if(reduced){ physics×30; draw(); } sem RAF (:1053-1055), else RAF (:1057);
+    CSS `@media (prefers-reduced-motion: reduce){ *{animation:none}}` (:70-72).
+    A-13-E-04.log existente referencia.
+
+E-05 XSS literal (snippet/drawer): PASS (estático, detalhe em A-SEC-01.log)
+  evidência: snippet escapeHtml (:636), renderNoteHtml escapa &<> antes de tags próprias (:577-580),
+    drawer title textContent (:208,:556), erro via textContent/showBanner (:310).
+
+E-06 SSE disconnect sutil + 1 fonte + duplo ensure: PASS (estático+SSE real)
+  evidência: ensureGraphEventSource guard `if(!graphEventSource)` (:678) — duplo ensure mesma instância (INV-06);
+    onerror → banner info sutil `live update pausado — reconectando…` + badge degraded, sem nova instância (:681-684);
+    onopen limpa aviso (:685-688); stopGraph única fonte de close (:299-302); renderGraph nunca fecha stream (:692-698).
+    Scratch real: `curl -N --max-time 3 /sse` → `event: endpoint /message?sessionId=` (stream abre, MP=51101).
+
+E-07 FTS `*():{}=-/` sem 500: PASS (executado scratch)
+  evidência: CLI `search '*():{}=-/'` → `{"results":[],"total":0}` exit 0 (200, sem 500);
+    HTTP `GET /api/search?query=%2A%28%29%3A%7B%7D%3D-%2F` → `{"results":[]}` 200.
+    Fonte: URLSearchParams (:603) + encodeURIComponent (:543,:715) — escape existente.
+
+E-08 360px bottom-sheet sem overflow + Esc: PASS (estático)
+  evidência: `html,body overflow-x:hidden` (:10-11), canvas max-width:100% (:12),
+    `@media(max-width:480px)` bottom-sheet 70vh (:73-80); Esc global fecha drawer→foco invocador (:1088-1091).
+    overflowX medido em browser: PENDENTE Verify (sem Chromium neste env) — CSS garante, medida vai no Verify.
+
+Batch2 🟡 6/6 corrigidos neste estado:
+  1) score.toFixed guard Number.isFinite (:628) — PASS
+  2) checkStatus else !ok (:381-389) — PASS
+  3) canvas invocador tabindex=0+role img+keydown (:706,:1030-1041) — PASS
+  4) focus trap trapDrawerTab+Tab global (:229-244,:1086) — PASS
+  5) cards Space+preventDefault (:518-520,:642-644) — PASS
+  6) AbortSignal.timeout fallback AbortController (:168-181) — PASS
+
+RESULTADO: E-01..E-08 8/8 PASS (E-03/E-04/E-08 estático+CSS; E-07 executado; E-06 stream real).

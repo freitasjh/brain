@@ -1,0 +1,29 @@
+# A-SEC-01 — XSS 3 payloads × todos os sinks (P3-01 Scenario 2)
+# Data: 2026-10-15 | análise estática de sinks (sem browser neste env) + scratch API 200
+
+PAYLOADS:
+  P1 = `<img src=x onerror=alert(1)>`
+  P2 = `<script>alert(1)</script>`
+  P3 = `javascript:alert(1)` em corpo de nota + `layer`/`path` com markup + texto de erro com markup
+
+SINKS AUDITADOS (grep escapeHtml/textContent/innerHTML):
+  S1 snippet busca (:636 `escapeHtml(item.snippet...)`) — P1/P2/P3 → literal. PASS
+  S2 snippet drawer renderNoteHtml (:577-580 escapa & < > ANTES de inserir h1/h2/strong/li próprios) — P1→`&lt;img...`, P2→`&lt;script...` literal. PASS
+  S3 drawer header path (:560 `escapeHtml(data.path)`) + title textContent (:556) — path com markup → literal. PASS
+  S4 lista browse path/layer (:469 escapeHtml(layer), :505 escapeHtml(g), :509 escapeHtml(n.path)) — PASS
+  S5 grafo filter options (:738 `escapeHtml(p)` ×2) + canvas fillText (canvas 2d texto, não HTML) — PASS
+  S6 banner erro showBanner (:310 `el.textContent=text`, botão retry texto fixo) — erro com markup → literal. PASS
+  S7 score/chunk (:628 scoreTxt Number guard + escapeHtml, :629 chunkTxt String+escapeHtml) — número, sem vetor. PASS
+
+VETORES NEGATIVOS (grep == 0):
+  onclick= : 0 — PASS (delegação data-action, H-01)
+  eval(|Function(|document.write|outerHTML : 0 — PASS
+  src="http : 0 — PASS (sem sink de URL; P1 `src=x` nunca chega a atributo — vira texto escapado)
+  data-toast : 0 — PASS (banner inline, INV-05)
+
+ZERO EXEC / ZERO REQUEST:
+  execução: nenhum sink insere markup cru; innerHTML só com estático ou escapeHtml-wrapped ou renderNoteHtml pré-escapado. Zero `alert` alcançável. PASS
+  request: nenhum fetch/img/src construído de conteúdo; API_BASE=location.origin fixo (:155). Zero request atacante. PASS
+
+RESULTADO: A-SEC-01 PASS — 3 payloads × 7 sinks, zero execução, zero request.
+Limite declarado: sem execução browser neste env; prova é estática+grep. Re-execução com Chromium vai no Verify se reviewer exigir.

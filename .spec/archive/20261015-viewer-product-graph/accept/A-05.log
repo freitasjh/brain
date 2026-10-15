@@ -1,0 +1,5 @@
+# A-05 (RF-05) — P1-04 — RESULTADO HARNESS
+
+Meta: chromium=devtools-harness (viewport real 1717x786, resize negado; norma 1280x720 com desvio registrado) · corpus=scratch 502 notas/61 edges (seed CLI) · TTI=0.032 s até 1º frame interativo (MutationObserver intra-página; orçamento ≤5 s) · fixture-500 sha256 fce640a0... (formato verbatim /api/graph p/ repro).
+0/1 nó: sem exceção, legenda presente.
+A-05: PASS.

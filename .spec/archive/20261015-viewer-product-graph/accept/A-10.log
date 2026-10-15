@@ -1,0 +1,5 @@
+# A-10 (RF-10, SEC-01 parcial, SEC-03) — P1-08
+
+BASELINE: FAIL parcial — sem moldura produto.
+PÓS-EDIT: header.product (título "Brain — busca e grafo do acervo" + badge #status role=status) + footer "API_BASE: <origem>" via textContent (escapado por construção, origem/host apenas, zero segredo/BRAIN_*); file:// e porta custom refletem location.origin.
+A-10: PASS. grep eval|Function(|document.write|outerHTML==0; src-http==0.

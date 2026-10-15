@@ -1,0 +1,22 @@
+# Harness H3 — Batch 1 viewer-product-graph (scratch, portas efêmeras)
+
+Scratch: mktemp DB + 502 notas (61 wikilink edges) → +1000 (1502 nós p/ freeze). Ollama morto p/ CLI (NULL honesto), MCP herdou default.
+Servidores: viewer :48303 (anúncio "viewer http://0.0.0.0:48303/"), MCP :45501 ("/sse"). Mortos após (lsof vazio). Produção 8321/8322 UP intocada. data/brain.db nunca tocado.
+
+Chromium (viewport real 1717x786 — resize negado pelo WM; desvio da norma 1280x720 registrado):
+- Header produto + badge + footer API_BASE=:48303 ✓ (A-10 dinâmico PASS)
+- Tabs: Buscar ativa exclusiva; Explorar lista 502 agrupadas clicáveis (role=button, Enter funciona); hash #explore/#graph sem reload ✓ (A-01 dinâmico PASS)
+- Busca "nota" → 10 resultados com score/chunk/snippet; "zzzqqqxkkk" → empty + sugestão fixa verbatim ✓ (A-02 dinâmico PASS)
+- Esc → input vazio + idle + foco no input ✓ (A-03 dinâmico PASS)
+- Clique linha → readNote verbatim + markdown + Back ✓
+- Grafo 502: TTI 0.032 s (MutationObserver até 1º frame; ≤5 s) ✓; __labelCount 38→32 (≤40, anti-colisão bbox) ✓ (A-05/A-06 dinâmicos PASS)
+- Grafo 1502: anúncio "Layout congelado: 1502 nós (acima de 1500)..." visível + aria-live; counter "layout congelado"; __labelCount 18 ✓ (A-09 dinâmico PASS)
+- Canvas role=img + aria-label + #graph-alt textual; legenda 6 itens visível ✓ (A-07/A-08 visual PASS)
+- Console: 1 ERROR favicon 404 → fix <link rel=icon data:,> → zero messages ✓
+- Network: 20 req — status/search/list/read/graph/events tudo 2xx; SSE /api/events abre; zero 4xx/5xx de API ✓
+- i18n PT-BR: lang=pt-BR, textos PT ("Buscar/Explorar/Grafo", "Tente um termo mais amplo...", "Layout congelado...") ✓
+
+Screenshots: accept/harness-graph-1502.png, accept/harness-search.png
+Backend UP ✓ (ambos serviram) · console 0 ERROR/0 WARN (pós-favicon) · network 20×2xx API · i18n PT-BR ✓
+
+Observações p/ P2/P3 (não bloqueiam Batch 1): badge texto "🟢 Online" com classe degraded (precedência é P2-02); título nota "sessoes/sessoes/..." (read serve path completo — display, pré-existente); viewport harness ≠1280x720 (re-medir em CI com janela exata se endurecer RF-05).

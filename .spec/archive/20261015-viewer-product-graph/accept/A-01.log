@@ -1,0 +1,5 @@
+# A-01 (RF-01, INV-01) — P1-01
+
+BASELINE (antes): FAIL — sem tabs, zero aria-selected.
+PÓS-EDIT: 3 tabs Buscar/Explorar/Grafo (role=tablist/tab, aria-controls, hash #search/#explore/#graph sem reload); switchTab() seta exatamente um aria-selected=true (grep: 6 ocorrências = 3 markup + set/get/none); foco visível (:focus-visible); botões nativos → Enter/Espaco atiçam por teclado.
+A-01: PASS (estático). Re-verificação dinâmica no harness chrome-devtools.

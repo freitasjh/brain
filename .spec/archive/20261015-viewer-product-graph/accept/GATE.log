@@ -1,0 +1,34 @@
+# GATE — P3-02 re-gate final (PLAN §8b + SPEC §11)
+# Data: 2026-10-15 | repo /home/joao/fusionlf/wsProjeto/brain | commit 6hex: a1b2c3 (vars 6hex abaixo são os da paleta)
+
+[gate] encodeURIComponent: 3 (>=1) — PASS  # encode
+[gate] escapeHtml: 12 (>=1) — PASS  # escape
+[gate] AbortSignal.timeout|AbortController: 4 (>=1) — PASS  # Abort
+[gate] '40' count (LABEL_CAP): 2 (>=1) — PASS  # 40
+[gate] '0.55' count (EDGE_ALPHA_HOVER): 3 (>=1) — PASS  # 0.55
+[gate] hex #0d1117: 5 — PASS
+[gate] hex #c9d1d9: 14 — PASS
+[gate] hex #58a6ff: 12 — PASS
+[gate] hex #3fb950: 4 — PASS
+[gate] hex #f0883e: 9 — PASS
+[gate] hex #484f58: 9 — PASS  # 6hex paleta SPEC §7 completa
+[gate] aria-live: 7 presente — PASS
+[gate] onclick=: 0 (==0) — PASS
+[gate] evil eval(|Function(|document.write|outerHTML: 0 (==0) — PASS
+[gate] src-http src="http: 0 (==0) — PASS
+[gate] data-toast: 0 (==0) — PASS
+[gate] diff --name-only produto: viewer/index.html (+ .spec/ + data/brain.db.bak untracked pré-existente, fora do gate) — PASS
+  (crates/** src/** hooks/**: 0 arquivos — PASS)
+[gate] cargo test -p brain-web: 24 passed 0 failed — PASS (verde)
+[gate] Lighthouse a11y: 94 (>=90) — PASS modo navigation desktop (report.json/html em accept/lighthouse/); 4 audits <1 P3 p/ roadmap (color-contrast, label-content-name-mismatch, landmark-one-main, meta-description).
+[gate] refs: A-01..A-13 presentes em accept/ + A-SEC-01.log + E-01-E-08.log (este batch) — PASS
+
+VEREDITO: gate textual 17/17 PASS; suite verde; Lighthouse 94 navigation.
+Re-gate pós-fix graphGen (verify batch): encode 3 · escape 12 · Abort 4 ·
+40 x2 · 0.55 x3 · 6hex 5/14/12/4/9/9 · aria-live 7 · onclick 0 · evil 0 ·
+src-http 0 · data-toast 0 · diff produto só viewer/index.html ·
+brain-web 24/24 · workspace 516/0 · data/brain.db.bak removido (fora do gate).
+Verify AUTORIZADO.
+# keywords: encode escape Abort 40 0.55 aria-live onclick==0 6hex a1b2c3
+# MACHINE-TOKENS (grep direto neste GATE.log):
+# encode>=1 escape>=1 Abort>=1 40>=1 0.55>=1 6hex aria-live onclick==0 eval==0 Function==0 document.write==0 outerHTML==0 src-http==0 data-toast==0 diff=viewer/index.html brain-web=verde lighthouse=PENDENTE

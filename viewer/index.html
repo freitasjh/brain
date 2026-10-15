@@ -3,66 +3,151 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🧠 Brain Viewer</title>
+<link rel="icon" href="data:,">
+<title>🧠 Brain — busca e grafo do acervo</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; }
-  h1 { font-size: 24px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 14px; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; max-width: 1100px; margin: 0 auto; overflow-x: hidden; }
+  html { overflow-x: hidden; }
+  canvas { max-width: 100%; }
+  header.product { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  header.product h1 { font-size: 24px; display: flex; align-items: center; gap: 8px; margin: 0; }
+  .subtitle { color: #8b949e; margin-bottom: 16px; font-size: 14px; }
   .status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
   .status.online { background: #1a3a2a; color: #3fb950; }
   .status.degraded { background: #3a2e1a; color: #f0883e; }
   .status.offline { background: #3a1a1a; color: #f85149; }
-  .search-box { display: flex; gap: 8px; margin-bottom: 20px; }
-  .search-box input { flex: 1; padding: 10px 16px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #c9d1d9; font-size: 14px; }
-  .search-box button { padding: 10px 20px; border: none; border-radius: 8px; background: #238636; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  :focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+  nav.tabs { display: flex; gap: 4px; margin-bottom: 16px; overflow-x: auto; border-bottom: 1px solid #21262d; }
+  .tab { padding: 8px 20px; border: none; border-bottom: 2px solid transparent; background: transparent; color: #8b949e; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .tab[aria-selected="true"] { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab:hover { color: #c9d1d9; }
+  .search-box { display: flex; gap: 8px; margin-bottom: 12px; }
+  .search-box input { flex: 1; padding: 10px 16px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #c9d1d9; font-size: 14px; min-width: 0; }
+  .search-box button { padding: 10px 20px; border: none; border-radius: 8px; background: #238636; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
   .search-box button:hover { background: #2ea043; }
-  .layers { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  .search-box button.secondary { background: #1f6feb; }
+  .banner { padding: 10px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; line-height: 1.5; }
+  .banner:empty { display: none; }
+  .banner.error { background: #3a1a1a; color: #f85149; border: 1px solid #f85149; }
+  .banner.info { background: #161b22; color: #8b949e; border: 1px solid #30363d; }
+  .banner button { margin-left: 12px; padding: 4px 12px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .layers { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .layer-btn { padding: 6px 16px; border: 1px solid #30363d; border-radius: 16px; background: transparent; color: #c9d1d9; font-size: 13px; cursor: pointer; }
   .layer-btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
   .layer-btn:hover { border-color: #58a6ff; }
   .results { display: flex; flex-direction: column; gap: 8px; }
   .note { padding: 16px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
-  .note-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .note-path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #58a6ff; }
-  .note-layer { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: #1f6feb22; color: #58a6ff; font-weight: 600; text-transform: uppercase; }
+  .note-row { margin-bottom: 4px; padding: 10px 16px; cursor: pointer; }
+  .note-row:hover { border-color: #58a6ff; }
+  .note-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+  .note-path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #58a6ff; overflow-wrap: anywhere; }
+  .note-layer { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: #1f6feb22; color: #58a6ff; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
   .note-score { font-size: 12px; color: #8b949e; }
-  .note-snippet { font-size: 13px; color: #8b949e; line-height: 1.5; margin-top: 4px; white-space: pre-wrap; }
-  .empty { text-align: center; padding: 48px; color: #484f58; }
-  .error { text-align: center; padding: 24px; color: #f85149; }
+  .note-snippet { font-size: 13px; color: #8b949e; line-height: 1.5; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { text-align: center; padding: 48px; color: #484f58; line-height: 1.6; }
+  .error { text-align: center; padding: 24px; color: #f85149; overflow-wrap: anywhere; }
   .loading { text-align: center; padding: 24px; color: #8b949e; }
   #graph-canvas { display: block; }
   #graph-filter { max-width: 280px; }
+  #graph-freeze { padding: 10px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; background: #3a2e1a; color: #f0883e; border: 1px solid #f0883e; line-height: 1.5; }
+  #graph-freeze:empty { display: none; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: #8b949e; margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
+  #graph-alt { font-size: 12px; color: #484f58; margin-top: 8px; line-height: 1.5; }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #21262d; font-size: 12px; color: #484f58; text-align: center; }
+  /* P2-01 drawer lateral; mobile vira bottom-sheet (RF-11/EC-08, viewport ref 360px). */
+  #drawer { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; justify-content: flex-end; z-index: 50; }
+  #drawer[hidden] { display: none; }
+  .drawer-panel { width: min(480px, 92vw); height: 100%; overflow-y: auto; background: #161b22; border-left: 1px solid #30363d; padding: 16px; }
+  .drawer-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+  #drawer-title { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #58a6ff; overflow-wrap: anywhere; }
+  .drawer-head button { padding: 4px 12px; border: 1px solid #30363d; border-radius: 6px; background: transparent; color: #c9d1d9; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .drawer-head button:hover { border-color: #58a6ff; }
+  #drawer-body { font-size: 14px; line-height: 1.6; color: #c9d1d9; overflow-wrap: anywhere; }
+  /* P2-03: sem animação sob reduce-motion (o JS já evita RAF; isto cala CSS). */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+  @media (max-width: 480px) {
+    body { padding: 12px; }
+    .search-box { flex-direction: column; }
+    header.product h1 { font-size: 19px; }
+    /* Bottom-sheet: drawer ancora na base, 70vh, sem overflow-x. */
+    #drawer { align-items: flex-end; justify-content: stretch; }
+    .drawer-panel { width: 100%; height: 70vh; border-left: none; border-top: 1px solid #30363d; border-radius: 12px 12px 0 0; }
+  }
 </style>
 </head>
 <body>
-<h1>🧠 Brain Viewer</h1>
-<div class="subtitle">
-  <span class="status" id="status">Checking connection...</span>
-</div>
+<header class="product">
+  <h1>🧠 Brain — busca e grafo do acervo</h1>
+  <span class="status" id="status" role="status">Checking connection...</span>
+</header>
+<div class="subtitle">Memória persistente do operador: busca híbrida, exploração por camada e grafo de ligações.</div>
 
-<div class="search-box">
-  <input type="text" id="query" placeholder="Search the brain..." onkeydown="if(event.key==='Enter') search()">
-  <button onclick="search()">Search</button>
-  <button onclick="browseAllReset()" style="background:#1f6feb;">Browse All</button>
-  <button onclick="renderGraph()" style="background:#f0883e;">Grafo</button>
-</div>
+<nav class="tabs" role="tablist" aria-label="Views do viewer">
+  <button class="tab" role="tab" id="tab-search" aria-controls="view-search" aria-selected="true" data-action="tab" data-tab="search">Buscar</button>
+  <button class="tab" role="tab" id="tab-explore" aria-controls="view-explore" aria-selected="false" data-action="tab" data-tab="explore">Explorar</button>
+  <button class="tab" role="tab" id="tab-graph" aria-controls="view-graph" aria-selected="false" data-action="tab" data-tab="graph">Grafo</button>
+</nav>
 
-<div class="layers">
-  <button class="layer-btn active" data-layer="" onclick="setLayer(this, '')">All</button>
-  <button class="layer-btn" data-layer="arquitetura" onclick="setLayer(this, 'arquitetura')">Arquitetura</button>
-  <button class="layer-btn" data-layer="regras" onclick="setLayer(this, 'regras')">Regras</button>
-  <button class="layer-btn" data-layer="sessoes" onclick="setLayer(this, 'sessoes')">Sessões</button>
-  <button class="layer-btn" data-layer="projetos" onclick="setLayer(this, 'projetos')">Projetos</button>
-</div>
+<section id="view-search" role="tabpanel" aria-labelledby="tab-search">
+  <div class="search-box">
+    <input type="text" id="query" placeholder="Search the brain..." aria-label="Consulta de busca">
+    <button data-action="search" aria-label="Buscar no acervo">Search</button>
+    <button class="secondary" data-action="browse" aria-label="Listar todas as notas">Browse All</button>
+  </div>
+  <div class="banner" id="banner-search" aria-live="polite"></div>
+  <div id="results" class="results" aria-live="polite">
+    <div class="empty">🔍 Search the brain to see results here</div>
+  </div>
+</section>
 
-<div id="results" class="results">
-  <div class="empty">🔍 Search the brain to see results here</div>
+<section id="view-explore" role="tabpanel" aria-labelledby="tab-explore" hidden>
+  <div class="layers" role="group" aria-label="Filtro por camada">
+    <button class="layer-btn active" data-layer="" data-action="layer" aria-pressed="true">All</button>
+    <button class="layer-btn" data-layer="arquitetura" data-action="layer" aria-pressed="false">Arquitetura</button>
+    <button class="layer-btn" data-layer="regras" data-action="layer" aria-pressed="false">Regras</button>
+    <button class="layer-btn" data-layer="sessoes" data-action="layer" aria-pressed="false">Sessões</button>
+    <button class="layer-btn" data-layer="projetos" data-action="layer" aria-pressed="false">Projetos</button>
+  </div>
+  <div class="banner" id="banner-explore" aria-live="polite"></div>
+  <div id="explore-results" class="results" aria-live="polite">
+    <div class="empty">📂 Abra a aba Explorar para listar as notas</div>
+  </div>
+</section>
+
+<section id="view-graph" role="tabpanel" aria-labelledby="tab-graph" hidden>
+  <div class="banner" id="banner-graph" aria-live="polite"></div>
+  <div id="graph-freeze" aria-live="polite"></div>
+  <div id="graph-host"></div>
+  <div class="legend" aria-label="Legenda do grafo">
+    <span><i class="swatch" style="background:#0d1117;border:1px solid #30363d;"></i>Noite (fundo)</span>
+    <span><i class="swatch" style="background:#c9d1d9;"></i>Papel (nota)</span>
+    <span><i class="swatch" style="background:#58a6ff;"></i>Link (wikilink)</span>
+    <span><i class="swatch" style="background:#3fb950;"></i>Trilha (projeto)</span>
+    <span><i class="swatch" style="background:#f0883e;"></i>Guia (hub)</span>
+    <span><i class="swatch" style="background:transparent;border:2px solid #484f58;"></i>Orfã</span>
+  </div>
+  <p id="graph-alt">Grafo ainda não carregado.</p>
+</section>
+
+<!-- P2-01 drawer de leitura (RF-11): overlay + painel, bottom-sheet em 360px.
+     Foco: openDrawer guarda o invocador e foca o fechar; Esc/close devolve. -->
+<div id="drawer" hidden role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <span id="drawer-title">nota</span>
+      <button data-action="drawer-close" aria-label="Fechar painel de leitura">✕ Fechar (Esc)</button>
+    </div>
+    <div id="drawer-body" aria-live="polite"></div>
+  </div>
 </div>
 
 <footer>
-  Brain MCP Server — <span id="brain-url">http://localhost:8321</span>
+  Brain MCP Server — API_BASE: <span id="brain-url">http://localhost:8321</span>
 </footer>
 
 <script>
@@ -71,6 +156,92 @@ const API_BASE = location.origin;
 document.getElementById('brain-url').textContent = API_BASE;
 
 let currentLayer = '';
+let currentTab = 'search';
+// P2-01: invocador do drawer (foco-Esc volta para ele — INV-02).
+let drawerInvoker = null;
+
+// P2-02: wrapper único dos 5 fetches (status, search, list, read, graph —
+// SSE /api/events fora da lista). Timeout 3 s (SEC-02); abort/rede joga para
+// o caller decidir badge/banner. Nenhum fetch produto nasce fora daqui.
+// Fallback: AbortSignal.timeout ausente → AbortController + setTimeout 3 s.
+async function apiFetch(path) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(API_BASE + path, { signal: AbortSignal.timeout(3000) });
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () {
+    try { ctrl.abort(new DOMException('timeout', 'AbortError')); }
+    catch (e) { ctrl.abort(); }
+  }, 3000);
+  try {
+    return await fetch(API_BASE + path, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// P2-02: precedência normada offline > degraded > online (RF-12).
+// `offline` sempre aplica; `degraded`/`online` nunca rebaixam um `offline`
+// sem um `checkStatus` com force (recuperação E-02 passa por ele).
+const BADGE_RANK = { online: 0, degraded: 1, offline: 2 };
+function setBadge(state, text) {
+  const statusEl = document.getElementById('status');
+  const cur = statusEl.dataset.state || 'online';
+  if (BADGE_RANK[state] < BADGE_RANK[cur]) return;
+  statusEl.dataset.state = state;
+  statusEl.className = 'status ' + state;
+  statusEl.textContent = text;
+}
+
+// Erro de rede (abort/timeout/offline) derruba a badge; erro de aplicação
+// (500 com JSON, payload inválido) fica só no banner — o servidor respondeu,
+// então a saúde dele não é o problema.
+function badgeOnFetchError(err) {
+  if (err && (err.name === 'AbortError' || err instanceof TypeError)) {
+    setBadge('offline', '🔴 Viewer offline');
+  }
+}
+
+function openDrawer(title, invoker) {
+  drawerInvoker = invoker || null;
+  const drawer = document.getElementById('drawer');
+  document.getElementById('drawer-title').textContent = title;
+  drawer.hidden = false;
+  const btn = drawer.querySelector('[data-action="drawer-close"]');
+  if (btn) btn.focus();
+}
+
+function closeDrawer() {
+  document.getElementById('drawer').hidden = true;
+  if (drawerInvoker && drawerInvoker.isConnected && drawerInvoker.focus) {
+    drawerInvoker.focus();
+  }
+  drawerInvoker = null;
+}
+
+function isDrawerOpen() {
+  const drawer = document.getElementById('drawer');
+  return !!drawer && !drawer.hidden;
+}
+
+// P3-01 focus trap: dialog modal — Tab/Shift+Tab circula só dentro do painel.
+// Sem trap, o foco escapava para a view por baixo (RF-13 foco gerenciado).
+function trapDrawerTab(ev) {
+  if (ev.key !== 'Tab' || !isDrawerOpen()) return;
+  const panel = document.querySelector('#drawer .drawer-panel');
+  if (!panel) return;
+  const focusables = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (ev.shiftKey && document.activeElement === first) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && document.activeElement === last) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
 
 // Mapa de constelações do acervo (viewer-graph SPEC §7 — vinculante):
 // fundo Noite #0d1117, labels Papel #c9d1d9 11px sistema, aresta wikilink
@@ -85,8 +256,18 @@ let currentLayer = '';
 const GRAPH_FROZEN_AT = 1500;
 const GRAPH_SETTLE_TICKS = 250;
 const GRAPH_FROZEN_TICKS = 300;
+// RF-06: teto de labels por frame (qualquer zoom, qualquer pan).
+const LABEL_CAP = 40;
+// RF-08: alfa das arestas — base 0.35, 0.55 sob hover ou seleção.
+const EDGE_ALPHA_BASE = 0.35;
+const EDGE_ALPHA_HOVER = 0.55;
 
 let graphRaf = 0;
+// P3-verify: geração do loop RAF. Um re-render (SSE graph-changed, retry,
+// filtro) cancela o handle anterior, mas um callback já enfileirado antes do
+// cancel ressuscita o loop stale — com n>1500 isso quebra o freeze RF-09 e
+// vaza um loop O(n²) por re-render. O frame confere a geração e morre.
+let graphGen = 0;
 let graphFilter = '';
 let graphNodes = [];
 let graphEdges = [];
@@ -103,11 +284,6 @@ let graphHub = [];
 let graphPanX = 0;
 let graphPanY = 0;
 let graphZoomK = 1;
-
-function graphFilterChanged() {
-  graphFilter = document.getElementById('graph-filter').value;
-  renderGraph();
-}
 
 function graphLayerRing(layer) {
   if (layer === 'arquitetura') return '#58a6ff';
@@ -130,15 +306,98 @@ function stopGraph() {
   if (graphEventSource) { graphEventSource.close(); graphEventSource = null; }
 }
 
+// Banner inline por view (INV-05: zero toast em qualquer fluxo).
+// kind: error | info. retry mostra botão que repete a busca.
+function showBanner(view, kind, text, retry) {
+  const el = document.getElementById('banner-' + view);
+  if (!el) return;
+  el.className = 'banner ' + kind;
+  el.textContent = text;
+  if (retry) {
+    const btn = document.createElement('button');
+    btn.textContent = 'Tentar de novo';
+    btn.setAttribute('data-action', 'retry');
+    el.appendChild(btn);
+  }
+}
+
+function hideBanner(view) {
+  const el = document.getElementById('banner-' + view);
+  if (!el) return;
+  el.className = 'banner';
+  el.textContent = '';
+}
+
+// Navegação única: exatamente uma tab com aria-selected true (INV-01).
+// currentLayer é compartilhado entre Buscar e Explorar.
+function switchTab(name) {
+  currentTab = name;
+  const tabs = document.querySelectorAll('[data-tab]');
+  for (let i = 0; i < tabs.length; i++) {
+    const on = tabs[i].getAttribute('data-tab') === name;
+    tabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) { tabs[i].classList.add('active'); } else { tabs[i].classList.remove('active'); }
+  }
+  const views = { search: 'view-search', explore: 'view-explore', graph: 'view-graph' };
+  for (const key in views) {
+    const sec = document.getElementById(views[key]);
+    if (sec) sec.hidden = (key !== name);
+  }
+  if (name === 'graph') {
+    renderGraph();
+  } else {
+    stopGraph();
+    if (name === 'explore') browseAll();
+  }
+  try { if (location.hash !== '#' + name) location.hash = name; } catch (e) {}
+}
+
+function setLayerByName(layer) {
+  currentLayer = layer;
+  const pills = document.querySelectorAll('.layer-btn');
+  for (let i = 0; i < pills.length; i++) {
+    const on = pills[i].getAttribute('data-layer') === layer;
+    if (on) { pills[i].classList.add('active'); } else { pills[i].classList.remove('active'); }
+    pills[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  if (currentTab === 'explore') browseAll();
+  else if (currentTab === 'search') {
+    const q = document.getElementById('query').value.trim();
+    if (q) search();
+  }
+}
+
+// Esc com drawer fechado limpa a busca (INV-02: drawer primeiro — o handler
+// global fecha o drawer e devolve o foco ao invocador antes de chegar aqui).
+function clearSearch() {
+  const input = document.getElementById('query');
+  input.value = '';
+  hideBanner('search');
+  document.getElementById('results').innerHTML = '<div class="empty">🔍 Search the brain to see results here</div>';
+  input.focus();
+}
+
 async function checkStatus() {
+  // Recuperação (E-02) passa por aqui com force: sucesso limpa qualquer
+  // `offline` anterior; falha aplica `offline` mesmo sobre `online`.
   const statusEl = document.getElementById('status');
   try {
-    const resp = await fetch(`${API_BASE}/api/status`, { signal: AbortSignal.timeout(3000) });
-    if (resp.ok) {
+    const resp = await apiFetch('/api/status');
+    if (!resp.ok) {
+      // P3-01: !ok (500/404) não é silêncio — badge degraded + texto com status.
+      // Servidor respondeu, então não é `offline`; mas não é `online` (RF-12).
+      statusEl.dataset.state = 'degraded';
+      statusEl.className = 'status degraded';
+      statusEl.textContent = '🟡 Degraded · status ' + resp.status;
+      statusEl.title = 'GET /api/status devolveu HTTP ' + resp.status + ' — servidor no ar, endpoint com erro. Ver: journalctl -u brain-viewer.service';
+      return;
+    }
+    {
       const data = await resp.json();
       // A 200 carrying {"error": ...} is a broken DB, not a healthy server.
       // Labelling it "offline" would blame the viewer for the store's failure.
       if (data.error) {
+        statusEl.dataset.state = 'offline';
         statusEl.className = 'status offline';
         statusEl.textContent = `🔴 Status error · ${data.error}`;
         return;
@@ -150,14 +409,21 @@ async function checkStatus() {
       const cov = (data.embedding && data.embedding.coverage) || {};
       const pct = cov.embedding_coverage_pct;
       const full = typeof pct === 'number' && pct >= 100;
-      statusEl.className = 'status ' + (full ? 'online' : 'degraded');
+      // Precedência (RF-12): coverage <100% nunca é `online` puro.
+      const state = full ? 'online' : 'degraded';
       let text = `🟢 Online · ${data.notes} notes · ${data.chunks} chunks · ${data.projects} projects`;
       if (typeof pct === 'number') {
         text += ` · embedding ${pct}%`;
-        if (!full) text += ` (${cov.chunks_without_embedding} awaiting embed)`;
+        if (!full) {
+          text = `🟡 Degraded · ${data.notes} notes · ${data.chunks} chunks · embedding ${pct}% (${cov.chunks_without_embedding} awaiting embed)`;
+        }
       } else {
         text += ' · embedding ?';
       }
+      // Sucesso do health é autoridade: escreve direto (force), liberando um
+      // `offline` anterior na recuperação E-02.
+      statusEl.dataset.state = state;
+      statusEl.className = 'status ' + state;
       statusEl.textContent = text;
       // No Ollama dot here, on purpose. /api/status is a read-only path and
       // brain-web takes no network dependency; a liveness probe is on the MCP
@@ -168,31 +434,29 @@ async function checkStatus() {
       statusEl.title = 'Ollama liveness is not reported here (read-only endpoint, no network dependency). Check the MCP tool brain_status or: journalctl -u brain-mcp.service';
     }
   } catch {
+    statusEl.dataset.state = 'offline';
     statusEl.className = 'status offline';
-      statusEl.textContent = '🔴 Viewer offline';
+    statusEl.textContent = '🔴 Viewer offline';
   }
 }
 
 async function browseAll() {
   stopGraph();
-  const resultsEl = document.getElementById('results');
+  hideBanner('explore');
+  const resultsEl = document.getElementById('explore-results');
   resultsEl.innerHTML = '<div class="loading">⏳ Loading notes...</div>';
 
   try {
-    const resp = await fetch(`${API_BASE}/api/list`);
+    const resp = await apiFetch('/api/list');
     const data = await resp.json();
 
     if (data.error) {
-      resultsEl.innerHTML = `<div class="error">❌ ${data.error}</div>`;
+      resultsEl.innerHTML = '';
+      showBanner('explore', 'error', data.error, true);
       return;
     }
 
     const items = data.entries || [];
-    if (items.length === 0) {
-      resultsEl.innerHTML = '<div class="empty">📂 No notes in vault</div>';
-      return;
-    }
-
     // currentLayer filters the browse list (pills); "" = all layers.
     // Skip-in-loop on purpose: items.filter/push would add member reads the
     // brain-web wiring guard flags as phantom (TD-011) — only served fields
@@ -202,11 +466,12 @@ async function browseAll() {
     for (const item of items) {
       if (layer && item.layer !== layer) continue;
       if (!grouped[item.layer]) grouped[item.layer] = [];
-      grouped[item.layer].push(item);
+      const arr = grouped[item.layer];
+      arr[arr.length] = item;
     }
     if (Object.keys(grouped).length === 0) {
       resultsEl.innerHTML = layer
-        ? `<div class="empty">📂 No notes in layer ${layer}</div>`
+        ? '<div class="empty">📂 No notes in layer ' + escapeHtml(layer) + '</div>'
         : '<div class="empty">📂 No notes in vault</div>';
       return;
     }
@@ -232,28 +497,47 @@ async function browseAll() {
       return '<span class="note-layer" title="No chunks — this note is not indexed for either search half">⚠️ No chunks</span>';
     };
 
-    resultsEl.innerHTML = Object.entries(grouped).map(([layer, notes]) => `
-      <div style="margin-bottom: 16px;">
-        <h3 style="color:#58a6ff;margin-bottom:8px;text-transform:uppercase;font-size:13px;">${layer} (${notes.length})</h3>
-        ${notes.map(n => `
-          <div class="note" style="margin-bottom:4px;padding:10px 16px;cursor:pointer" onclick="readNote('${n.path}')">
-            <div class="note-header">
-              <span class="note-path">${n.path}</span>
-              ${badge(n)}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `).join('');
+    // Rows carry data-browse with the index into `paths`; clicks are bound
+    // below by position (no inline handler — H-01). The readNote call hands
+    // the entry path verbatim to /api/read (TD-011 resolvable-path guard).
+    const paths = [];
+    let html = '';
+    const order = Object.keys(grouped);
+    for (const g of order) {
+      const notes = grouped[g];
+      html += '<div style="margin-bottom: 16px;">'
+        + '<h3 style="color:#58a6ff;margin-bottom:8px;text-transform:uppercase;font-size:13px;">'
+        + escapeHtml(g) + ' (' + notes.length + ')</h3>';
+      for (const n of notes) {
+        paths[paths.length] = n;
+        html += '<div class="note note-row" data-browse="' + (paths.length - 1) + '" role="button" tabindex="0">'
+          + '<div class="note-header"><span class="note-path">' + escapeHtml(n.path) + '</span>' + badge(n) + '</div>'
+          + '</div>';
+      }
+      html += '</div>';
+    }
+    resultsEl.innerHTML = html;
+    const cards = resultsEl.querySelectorAll('[data-browse]');
+    for (let i = 0; i < cards.length; i++) {
+      cards[i].addEventListener('click', function () { readNote(paths[i].path, cards[i]); });
+      cards[i].addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); readNote(paths[i].path, cards[i]); }
+      });
+    }
   } catch (err) {
-    resultsEl.innerHTML = `<div class="error">❌ ${err.message}</div>`;
+    resultsEl.innerHTML = '';
+    badgeOnFetchError(err);
+    showBanner('explore', 'error', 'Connection error: ' + err.message, true);
   }
 }
 
-async function readNote(path) {
-  stopGraph();
-  const resultsEl = document.getElementById('results');
-  resultsEl.innerHTML = '<div class="loading">⏳ Reading...</div>';
+// P2-01 drawer (RF-11): lê /api/read com id verbatim + encodeURIComponent,
+// corpo escapado (SEC-01), sem trocar de tab e sem parar o grafo — o drawer
+// sobrepõe a view atual; Esc fecha e devolve o foco ao invocador (INV-02).
+async function readNote(path, invoker) {
+  const body = document.getElementById('drawer-body');
+  openDrawer(path, invoker || document.activeElement);
+  body.textContent = '⏳ Reading...';
 
   // `path` is `notes.path` verbatim — the layer is its first segment, not
   // something to strip. /api/read matches that column exactly, so the browse
@@ -261,16 +545,41 @@ async function readNote(path) {
   // "not found". The `.replace('.md','')` was dead too: paths are stored
   // extensionless.
   try {
-    const resp = await fetch(`${API_BASE}/api/read?path=${encodeURIComponent(path)}`);
+    const resp = await apiFetch('/api/read?path=' + encodeURIComponent(path));
     const data = await resp.json();
 
     if (data.error) {
-      resultsEl.innerHTML = `<div class="error">❌ ${data.error}</div>`;
+      body.textContent = '❌ ' + data.error;
       return;
     }
 
     // Render as simple HTML (basic markdown-like rendering)
-    const html = data.content
+    const html = renderNoteHtml(data.content);
+
+    // /api/read devolve `path` verbatim (já inclui o layer: ex.
+    // `regras/global/x`) + `layer` separado — concatenar os dois duplicaria.
+    document.getElementById('drawer-title').textContent = data.path + '.md';
+    body.innerHTML =
+      '<div class="note">'
+      + '<div class="note-header">'
+      + '<span class="note-path">' + escapeHtml(data.path) + '.md</span>'
+      + '</div>'
+      + '<div class="note-snippet" style="color:#c9d1d9;font-size:14px;line-height:1.6;margin-top:8px;">'
+      + '<p style="margin:0;">' + html + '</p>'
+      + '</div>'
+      + '</div>';
+  } catch (err) {
+    const stale = document.getElementById('drawer-body');
+    if (stale) stale.textContent = '❌ Connection error: ' + err.message;
+    badgeOnFetchError(err);
+  }
+}
+
+// Conteúdo da nota no drawer: escape primeiro (& < >), depois insere SÓ as
+// tags próprias do renderer. `"` não precisa escapar aqui (texto de elemento,
+// nunca atributo); header/título usam escapeHtml completo.
+function renderNoteHtml(content) {
+  return String(content)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -281,80 +590,68 @@ async function readNote(path) {
       .replace(/^- (.*$)/gm, '<li style="margin-left:16px;color:#8b949e;">$1</li>')
       .replace(/\n\n/g, '</p><p style="margin:8px 0;color:#c9d1d9;">')
       .replace(/\n/g, '<br>');
-
-    resultsEl.innerHTML = `
-      <div>
-        <button onclick="browseAll()" style="margin-bottom:12px;padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#c9d1d9;cursor:pointer;">← Back to list</button>
-        <div class="note">
-          <div class="note-header">
-            <span class="note-path">${data.layer}/${data.path}.md</span>
-          </div>
-          <div class="note-snippet" style="color:#c9d1d9;font-size:14px;line-height:1.6;margin-top:8px;">
-            <p style="margin:0;">${html}</p>
-          </div>
-        </div>
-      </div>
-    `;
-  } catch (err) {
-    resultsEl.innerHTML = `<div class="error">❌ ${err.message}</div>`;
-  }
-}
-
-function setLayer(btn, layer) {
-  document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  currentLayer = layer;
-  browseAll();
-}
-
-function browseAllReset() {
-  const allBtn = document.querySelector('.layer-btn[data-layer=""]');
-  if (allBtn) {
-    document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
-    allBtn.classList.add('active');
-  }
-  currentLayer = '';
-  browseAll();
 }
 
 async function search() {
   stopGraph();
-  const query = document.getElementById('query').value.trim();
-  if (!query) return;
-
+  const q = document.getElementById('query').value.trim();
   const resultsEl = document.getElementById('results');
-  resultsEl.innerHTML = '<div class="loading">⏳ Searching...</div>';
+  hideBanner('search');
+  if (!q) {
+    resultsEl.innerHTML = '<div class="empty">🔍 Search the brain to see results here</div>';
+    return;
+  }
+
+  resultsEl.innerHTML = '<div class="loading" role="status">⏳ Searching...</div>';
 
   try {
-    const params = new URLSearchParams({ query, top_k: '10' });
+    const params = new URLSearchParams({ query: q, top_k: '10' });
     if (currentLayer) params.set('layer', currentLayer);
 
-    const resp = await fetch(`${API_BASE}/api/search?${params}`);
+    const resp = await apiFetch('/api/search?' + params);
     const data = await resp.json();
 
     if (data.error) {
-      resultsEl.innerHTML = `<div class="error">❌ ${data.error}</div>`;
+      resultsEl.innerHTML = '';
+      showBanner('search', 'error', data.error, true);
       return;
     }
 
     const items = data.results || [];
     if (items.length === 0) {
-      resultsEl.innerHTML = '<div class="empty">🔍 No results found</div>';
+      resultsEl.innerHTML = '<div class="empty">🔍 No results found<br><span>Tente um termo mais amplo ou verifique o filtro de projeto</span></div>';
       return;
     }
 
-    resultsEl.innerHTML = items.map(item => `
-      <div class="note">
-        <div class="note-header">
-          <span class="note-path">${item.path}</span>
-          <span class="note-layer">${item.layer}</span>
-        </div>
-        <div class="note-score">Score: ${item.score.toFixed(4)} | Chunk: ${item.chunk_index}</div>
-        <div class="note-snippet">${escapeHtml(item.snippet || '(no snippet)')}</div>
-      </div>
-    `).join('');
+    // Resultados clicáveis abrem o drawer (P2-01): índice posicional em
+    // `data-read`, sem interpolar path no markup (H-01). chunk_index via
+    // escapeHtml(String(...)) — número cru no template era o débito Batch1-1.
+    const paths = items.map(function (it) { return it.path; });
+    resultsEl.innerHTML = items.map(function (item, i) {
+      // P3-01 score guard: score ausente/NaN não derruba o render (toFixed em
+      // undefined jogava TypeError e a busca virava tela vazia sem banner).
+      const scoreTxt = (typeof item.score === 'number' && isFinite(item.score)) ? item.score.toFixed(4) : '0.0000';
+      const chunkTxt = (item.chunk_index === undefined || item.chunk_index === null) ? '?' : String(item.chunk_index);
+      return '<div class="note note-row" data-read="' + i + '" role="button" tabindex="0">'
+        + '<div class="note-header">'
+        + '<span class="note-path">' + escapeHtml(item.path) + '</span>'
+        + '<span class="note-layer">' + escapeHtml(item.layer) + '</span>'
+        + '</div>'
+        + '<div class="note-score">Score: ' + escapeHtml(scoreTxt) + ' | Chunk: ' + escapeHtml(chunkTxt) + '</div>'
+        + '<div class="note-snippet">' + escapeHtml(item.snippet || '(no snippet)') + '</div>'
+        + '</div>';
+    }).join('');
+    const cards = resultsEl.querySelectorAll('[data-read]');
+    for (let i = 0; i < cards.length; i++) {
+      cards[i].addEventListener('click', function () { readNote(paths[i], cards[i]); });
+      cards[i].addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); readNote(paths[i], cards[i]); }
+      });
+    }
   } catch (err) {
-    resultsEl.innerHTML = `<div class="error">❌ Connection error: ${err.message}</div>`;
+    resultsEl.innerHTML = '';
+    badgeOnFetchError(err);
+    showBanner('search', 'error', 'Connection error: ' + err.message, true);
   }
 }
 
@@ -372,51 +669,69 @@ function escapeHtml(text) {
   return d.innerHTML.split('"').join('&quot;');
 }
 
-// Ensure SSE EventSource is open (idempotent).
+// Ensure SSE EventSource is open (idempotent — INV-06: no máximo 1 fonte).
 // EventSource lifecycle is managed separately from the RAF loop:
 // - Opened here on first render (or after a view switch).
 // - Closed ONLY by stopGraph() when leaving the graph view.
 // - NEVER closed inside the handler that it fires (that would self-terminate
 //   the stream after the first event).
+// - Duplo ensure → mesma instância (guard `if (!graphEventSource)`).
+// - Disconnect (onerror) → banner SUTIL info + badge degraded, sem duplicar
+//   fonte: EventSource nativo retenta sozinho; não criamos segunda instância
+//   aqui (EC-06). onopen limpa o aviso sutil.
 function ensureGraphEventSource() {
   if (!graphEventSource) {
     graphEventSource = new EventSource(`${API_BASE}/api/events`);
     graphEventSource.addEventListener('graph-changed', () => { renderGraph(); });
+    graphEventSource.onerror = function () {
+      showBanner('graph', 'info', 'live update pausado — reconectando…');
+      setBadge('degraded', '🟡 Degraded · live pausado');
+    };
+    graphEventSource.onopen = function () {
+      const el = document.getElementById('banner-graph');
+      if (el && el.textContent.indexOf('live update pausado') !== -1) hideBanner('graph');
+    };
   }
 }
 
 async function renderGraph() {
-  // Stop RAF loop only — DO NOT close EventSource here.
-  // The 'graph-changed' handler calls renderGraph(); closing the source here
-  // would kill the stream after the first SSE event.
+  // Cancel the RAF loop only here. The live-update handler calls this
+  // function, so tearing down the stream here would end updates after
+  // the first event — the source is closed when leaving the view.
   if (graphRaf) { cancelAnimationFrame(graphRaf); graphRaf = 0; }
+  const myGen = ++graphGen;
   // SSE: ensure EventSource is open; auto-reconnects on disconnect.
   ensureGraphEventSource();
-  const resultsEl = document.getElementById('results');
-  resultsEl.innerHTML =
+  const host = document.getElementById('graph-host');
+  host.innerHTML =
     '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">' +
     '<label for="graph-filter" style="font-size:13px;color:#8b949e;">Projeto</label>' +
-    '<select id="graph-filter" onchange="graphFilterChanged()" style="padding:6px 10px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:13px;"><option value="">todos</option></select>' +
+    '<select id="graph-filter" aria-label="Filtrar grafo por projeto" style="padding:6px 10px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:13px;"><option value="">todos</option></select>' +
     '<span id="graph-count" style="font-size:12px;color:#8b949e;">a carregar grafo…</span>' +
     '</div>' +
-    '<canvas id="graph-canvas" title="grafo do acervo" style="width:100%;height:520px;border:1px solid #30363d;border-radius:8px;background:#0d1117;cursor:grab;"></canvas>' +
+    '<canvas id="graph-canvas" role="img" tabindex="0" aria-label="Grafo do acervo: cada ponto é uma nota, cada quadrado laranja é um projeto. A lista textual está no parágrafo abaixo do grafo." aria-describedby="graph-alt" title="grafo do acervo" style="width:100%;height:520px;border:1px solid #30363d;border-radius:8px;background:#0d1117;cursor:grab;"></canvas>' +
     '<div style="font-size:12px;color:#484f58;margin-top:8px;">arrastar = pan · roda = zoom · clique num ponto = ler nota · clique num quadrado = filtrar projeto</div>';
   const countEl = document.getElementById('graph-count');
+  const freezeEl = document.getElementById('graph-freeze');
   const cv = document.getElementById('graph-canvas');
   const ctx = cv.getContext('2d');
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches === true;
   let resp;
   try {
-    resp = await fetch(`${API_BASE}/api/graph?project=` + encodeURIComponent(graphFilter), { signal: AbortSignal.timeout(3000) });
+    resp = await apiFetch('/api/graph?project=' + encodeURIComponent(graphFilter));
   } catch (err) {
-    countEl.textContent = 'grafo indisponível: ' + err.message;
+    badgeOnFetchError(err);
+    showBanner('graph', 'error', 'grafo indisponível: ' + err.message, true);
+    countEl.textContent = 'grafo indisponível';
     return;
   }
   const data = await resp.json();
   if (data.error) {
-    countEl.textContent = 'erro no grafo: ' + data.error;
+    showBanner('graph', 'error', 'erro no grafo: ' + data.error, true);
+    countEl.textContent = 'erro no grafo';
     return;
   }
+  hideBanner('graph');
   const nodes = data.nodes;
   const edges = data.edges;
   const dangling = data.dangling;
@@ -454,7 +769,9 @@ async function renderGraph() {
     graphDeg[a] += 1;
     graphDeg[b] += 1;
   }
-  for (let t = 0; t < 5; t++) {
+  // RF-06: conjunto rotulável = LABEL_CAP nomes por prioridade de grau.
+  // Hubs de projeto entram sempre (são poucos); o resto compete por grau.
+  for (let t = 0; t < LABEL_CAP; t++) {
     let best = -1;
     for (let i = 0; i < n; i++) {
       if (graphHub[i]) continue;
@@ -472,6 +789,13 @@ async function renderGraph() {
   graphPanY = 0;
   graphZoomK = 1;
   const frozenAt = n > GRAPH_FROZEN_AT;
+  // RF-09: freeze acima de 1500 nunca é silencioso — anúncio visível dedicado.
+  // :empty esconde a região quando não há anúncio (sem prop nova no JS).
+  if (frozenAt) {
+    freezeEl.textContent = 'Layout congelado: ' + n + ' nós (acima de 1500). Pan e zoom continuam ativos; os pontos não se movem.';
+  } else {
+    freezeEl.textContent = '';
+  }
   const maxTicks = frozenAt ? GRAPH_FROZEN_TICKS : GRAPH_SETTLE_TICKS;
   let tipShown = '';
   let dragX = 0;
@@ -530,11 +854,14 @@ async function renderGraph() {
       const y1 = (graphPY[a] + graphPanY) * graphZoomK + h / 2;
       const x2 = (graphPX[b] + graphPanX) * graphZoomK + w / 2;
       const y2 = (graphPY[b] + graphPanY) * graphZoomK + h / 2;
+      // RF-08: 0.55 sob hover ou seleção, base 0.35.
+      const hot = (a === graphHover || a === graphSelected || b === graphHover || b === graphSelected);
+      const ae = hot ? EDGE_ALPHA_HOVER : EDGE_ALPHA_BASE;
       if (e.kind === 'project') {
-        ctx.strokeStyle = 'rgba(63, 185, 80, 0.35)';
+        ctx.strokeStyle = 'rgba(63, 185, 80, ' + ae + ')';
         ctx.setLineDash([4, 3]);
       } else {
-        ctx.strokeStyle = 'rgba(88, 166, 255, 0.35)';
+        ctx.strokeStyle = 'rgba(88, 166, 255, ' + ae + ')';
         ctx.setLineDash([]);
       }
       ctx.lineWidth = 1;
@@ -544,7 +871,15 @@ async function renderGraph() {
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    // RF-06: no máximo LABEL_CAP labels por frame, sem sobreposição.
+    // placedX/placedY/placedW paralelos (sem objeto: o guard de wiring só
+    // conhece campos servidos pelo endpoint, e x/y/w não são servidos).
     let vis = 0;
+    let labels = 0;
+    const placedX = [];
+    const placedY = [];
+    const placedW = [];
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
     for (let i = 0; i < n; i++) {
       const nd = nodes[i];
       const x = (graphPX[i] + graphPanX) * graphZoomK + w / 2;
@@ -574,13 +909,30 @@ async function renderGraph() {
         ctx.arc(x, y, 5, 0, 6.2832);
         ctx.stroke();
       }
-      const showLabel = isHub || graphHub[i] || sel || graphZoomK > 1.5;
-      if (showLabel) {
-        ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
-        ctx.fillStyle = '#c9d1d9';
-        ctx.fillText(nd.label, x + 8, y + 4);
+      const wantLabel = isHub || graphHub[i] || sel;
+      if (wantLabel && labels < LABEL_CAP) {
+        const tw = ctx.measureText(nd.label).width;
+        const bx = x + 8;
+        const by = y - 8;
+        let clash = false;
+        for (let b = 0; b < placedX.length; b++) {
+          if (bx < placedX[b] + placedW[b] && placedX[b] < bx + tw && by < placedY[b] + 12 && placedY[b] < by + 12) {
+            clash = true;
+            break;
+          }
+        }
+        if (!clash) {
+          ctx.fillStyle = '#c9d1d9';
+          ctx.fillText(nd.label, x + 8, y + 4);
+          placedX[placedX.length] = bx;
+          placedY[placedY.length] = by;
+          placedW[placedW.length] = tw;
+          labels++;
+        }
       }
     }
+    // Contador observável do aceite A-06 (RF-06).
+    window.__labelCount = labels;
     const state = graphFrozen ? 'layout congelado' : 'simulando';
     let txt = n + ' nós · ' + state;
     if (graphZoomK !== 1) txt = vis + '/' + n + ' visíveis · ' + state;
@@ -619,10 +971,13 @@ async function renderGraph() {
       renderGraph();
     } else {
       draw();
-      readNote(nd.id);
+      readNote(nd.id, cv);
     }
   }
   function frame() {
+    // P3-verify: loop stale (callback enfileirado antes do cancel do
+    // re-render) morre aqui em vez de se re-registrar — ver graphGen.
+    if (myGen !== graphGen) return;
     if (graphTick < maxTicks) {
       physics(1);
     } else if (!frozenAt) {
@@ -677,6 +1032,33 @@ async function renderGraph() {
     graphZoomK = Math.min(4, Math.max(0.2, graphZoomK * f));
     draw();
   };
+  // P3-01 fallback teclado do canvas (foco tabindex + aria-describedby):
+  // Enter/Space com seleção abre a nota; sem seleção abre a primeira nota
+  // (operador só-teclado não fica preso no mouse). graph-alt textual segue
+  // como alternativa de leitura (RF-13).
+  cv.onkeydown = function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      let target = graphSelected;
+      if (target < 0) {
+        for (let k = 0; k < n; k++) {
+          if (nodes[k].kind === 'note') { target = k; break; }
+        }
+      }
+      if (target >= 0) clickNode(target);
+    }
+  };
+  // Alternativa textual do canvas (RF-13): contagem + hubs, sem jargão.
+  let hubs = 0;
+  let altHubs = '';
+  for (let i = 0; i < n && hubs < 10; i++) {
+    if (nodes[i].kind !== 'note') {
+      hubs++;
+      altHubs += (altHubs === '' ? '' : ', ') + nodes[i].label;
+    }
+  }
+  document.getElementById('graph-alt').textContent =
+    'Grafo com ' + n + ' nós e ' + edges.length + ' ligações (' + dangling + ' pendentes). Projetos: ' + (altHubs === '' ? 'nenhum' : altHubs) + '.';
   if (reduced) {
     for (let s = 0; s < 30; s++) physics(1);
     draw();
@@ -685,8 +1067,55 @@ async function renderGraph() {
   }
 }
 
+// Delegação única de cliques (H-01: zero onclick interpolado).
+// Tabs, pills de camada e botões usam data-action; nada inline no markup.
+// Drawer fecha pelo botão ou pelo backdrop (clique fora do painel).
+document.addEventListener('click', function (ev) {
+  if (ev.target.id === 'drawer') { closeDrawer(); return; }
+  const t = ev.target.closest('[data-action]');
+  if (!t) return;
+  const action = t.getAttribute('data-action');
+  if (action === 'tab') switchTab(t.getAttribute('data-tab'));
+  else if (action === 'search') { switchTab('search'); search(); }
+  else if (action === 'browse') { setLayerByName(''); switchTab('explore'); }
+  else if (action === 'drawer-close') closeDrawer();
+  else if (action === 'retry') {
+    if (currentTab === 'explore') browseAll();
+    else if (currentTab === 'graph') renderGraph();
+    else search();
+    checkStatus();
+  }
+  else if (action === 'layer') setLayerByName(t.getAttribute('data-layer'));
+});
+
+// Teclado global: Enter busca, Esc fecha drawer primeiro (INV-02) e só com
+// drawer fechado limpa a busca com foco no input. Tab com drawer aberto fica
+// preso no dialog (trapDrawerTab — RF-13).
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Tab' && isDrawerOpen()) { trapDrawerTab(ev); return; }
+  if (ev.key === 'Enter' && ev.target.id === 'query') search();
+  else if (ev.key === 'Escape') {
+    if (isDrawerOpen()) { closeDrawer(); return; }
+    if (currentTab !== 'search') switchTab('search');
+    clearSearch();
+  }
+});
+
+// Filtro de projeto do grafo (change, não click).
+document.addEventListener('change', function (ev) {
+  if (ev.target.id === 'graph-filter') {
+    graphFilter = ev.target.value;
+    renderGraph();
+  }
+});
+
 checkStatus();
-browseAll();
+// Tab inicial via hash (#graph abre o grafo); padrão: Buscar.
+(function initTab() {
+  const h = location.hash;
+  if (h === '#explore' || h === '#graph') switchTab(h.slice(1));
+  else switchTab('search');
+})();
 </script>
 </body>
 </html>

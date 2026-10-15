@@ -1,0 +1,10 @@
+# A-12 + A-SEC-02 + E-02 (RF-12, SEC-02/H-02/H-03) — P2-02
+
+BASELINE (pré-edit): FAIL parcial.
+- `AbortSignal.timeout(3000)`: 5 hits (status/search/list/read/graph) — cada fetch com timeout próprio, SEM wrapper compartilhado; nenhum ponto único que garanta os 5 (novo fetch futuro nasce sem timeout).
+- Badge: online/degraded/offline + `(N awaiting embed)` existem em `checkStatus`, mas precedência `offline>degraded>online` não é função nomeada/testável; erro de fetch em search/browse/read/graph não toca a badge (só banner) — abort em `/api/search` deixa badge `online` (mente).
+- Erros: `showBanner` via textContent (ok); `browseAll` catch usa `'Connection error: ' + err.message` via textContent (ok); `readNote` catch usa `escapeHtml(err.message)` (ok).
+- E-02: banner+retry existe; badge NÃO recupera via retry (só no load via `checkStatus`).
+
+PÓS-EDIT: `apiFetch(path)` único (1 `fetch(` cru no fonte, dentro dele) com `AbortSignal.timeout(3000)`, usado por status/search/list/read/graph; `setBadge` + `BADGE_RANK` (offline>degraded>online); `badgeOnFetchError` (AbortError/TypeError→offline) nos 4 catches não-status; `checkStatus` sucesso escreve direto (force, recupera E-02); retry chama `checkStatus()`.
+A-12 + A-SEC-02 + E-02: PASS (código). Greps: `AbortSignal.timeout`==1 (no wrapper), `apiFetch`==6, `BADGE_RANK`==3. Harness funcional pendente abaixo.

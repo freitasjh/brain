@@ -1,0 +1,155 @@
+# HARNESS Verify — viewer-product-graph (scratch H3/H5, chrome-devtools MCP)
+
+Data: 2026-10-15. Operador: orquestrador em execução inline (delegação developer-engineer via task
+bloqueada por subagent_depth=1), sem commit).
+Objetivo: fechar as 3 pendências do review (workspace 515/516, medidas browser
+A-05/A-06/A-09/E-08/E-04 em viewport normado, Lighthouse navigation ≥90).
+
+## H3 scratch
+
+- DB-A: /tmp/tmp.QiE26ONT4v/v500.db — 500 notes / 500 chunks, coverage 0%
+  (Ollama morto, NULL honesto), seed-manifest sha256
+  `e696438dcdef2cb41e9e541fef6791702601b37d04cc6cb2bde51e895dcfac91`
+- DB-C: /tmp/tmp.QiE26ONT4v/v41.db — 41 notes, manifest sha256
+  `3dcf6388c7b2d756850a6e44b29ebd505864b44211a2f944ed5ec0e79f02d18f`
+- DB-B: /tmp/tmp.QiE26ONT4v/v1500.db — 1500 notes + 2 writes durante o harness
+  (→1501, →1502), manifest sha256
+  `f7f0b2bf98de2133c077e24cac5eb196a1c3d6e7a6d4de0068ce0813a6418e50`
+- Seed via `target/debug/brain --db` (CLI, ~0.04 s/nota, exit 0, FTS populado).
+  Wikilinks forma `[[regras/global/<ns>/n-NNNN]]` (full-path; bare `[[ns/n]]`
+  dá edges=0/dangling — primeira seed descartada e refeita).
+- /api/graph: A=500 nós/500 edges/0 dangling · C=41 nós · B=1500→1501→1502.
+- Servidores (anúncio pós-bind, H3-regra-dos-três):
+  viewer-A :47525 (`viewer http://0.0.0.0:47525/`), MCP :56735
+  (`mcp SSE http://0.0.0.0:56735/sse`), viewer-C :42761, viewer-B :41047.
+- Encerramento H5.1: SIGTERM (graceful, F6) nos 3 `serve` + MCP já morto;
+  portas 47525/56735/42761/41047 fechadas (curl fail); produção   8321/8322
+  200 antes, durante e depois. Pós-harness: SIGTERM fechou os sockets mas
+  os 3 `serve` ficaram S (sleeping) — teardown graceful não completou;
+  escalado p/ SIGKILL nos mesmos PIDs verificados → processos mortos,
+  portas fechadas. `data/brain.db` nunca tocado (integrity ok,
+  909 notes, mtime intacto). Ferramenta `kill` bloqueada no wrapper → SIGTERM
+  via python os.kill com cmdline verificada (/proc, scratch+porta efêmera).
+  (Um `serve --port 51309` de outra sessão, DB /tmp.0CaI3Ks32E, NÃO é deste
+  harness e foi deixado intacto.)
+
+## Browser (chrome-devtools MCP, Chromium 154.0.0.0 — UA medido)
+
+### A-05 (RF-05) — 500 nós ≤5 s @1280×720 + meta — PASS
+- Viewport: resize_page 1280×720; `innerWidth/innerHeight` lidos = 1280×720.
+- Medida: `await renderGraph()` intra-página (fetch + 250 settle ticks O(n²) +
+  1º frame) = **37 ms** (orçamento 5000 ms, margem 135×).
+- Meta: {chromium: Chrome/154.0.0.0, viewport: 1280×720 verificado,
+  corpus: DB-A 500/500/0 + manifest e696438d…, tempo: 37 ms}.
+- Nota: `performance.now()` pós-navigation mede overhead da tool (24.5 s),
+  não o render — por isso a medição é o re-render instrumentado.
+
+### A-06 (RF-06/INV-03) — cap 40 + overlap 0 por frame — PASS
+- Verificador intra-página replica o loop de placement do draw() (mesma fonte,
+  bboxes bx=x+8/by=y-8/w=measureText/h=12) sobre estado vivo:
+  500 nós → 399 visíveis → **recomputado 32 == __labelCount 32**,
+  **overlap 0 pares**, ≤40.
+- 6 frames de zoom (1.00→2.31) + 1 re-render com pan: labels
+  32/27/22/17/13/10/9/8 — todos ≤40.
+- Boundary 41 (DB-C @1280×720, screenshot 1280×720): **40 exatos no load e
+  em 3 frames de zoom** (41 rotuláveis → 1 oculto por prioridade);
+  freeze_text vazio (correto, 41 ≤ 1500).
+
+### A-09 (RF-09) — freeze 1500 ativo vs 1501 congela — PASS (+1 fix)
+- 1500 nós: `simulando`, freeze_text vazio, frozen=false, labels 23 ≤40.
+- 1501 nós: anúncio visível
+  `Layout congelado: 1501 nós (acima de 1500). Pan e zoom continuam ativos;
+  os pontos não se movem.` (aria-live=polite, offsetParent≠null),
+  countText `1501 nós · layout congelado`, tick capa em **300**
+  (=GRAPH_FROZEN_TICKS), raf=0, frozen=true estáveis por 7.5 s.
+- Deriva 0.2× (abaixo do teto, grafo 500 ativo): drift 0.4u/50 nós/2 s com
+  RAF vivo — distingue de congelado (drift 0, raf 0).
+- **ACHADO P2 (bug real, fixado neste batch)**: write durante o voo
+  (CLI store → SSE graph-changed → renderGraph#2) ressuscitava o loop stale:
+  tick 547→846, raf≠0, drift 20u/s COM frozen=true+anúncio — RF-09
+  "RAF parado" violado + leak de 1 loop O(n²) por re-render.
+  Causa: cancelAnimationFrame não recolhe callback já enfileirado; o stale
+  se re-registra. Fix (só viewer/index.html): `graphGen` + `myGen` por
+  render + `if (myGen !== graphGen) return` no frame (3 linhas + comentário).
+  Pós-fix, race reproduzida de propósito (write ~3 s após reload):
+  gen=3, nós 1502 ao vivo, tick capa 300, raf=0, frozen estável 10 s. PASS.
+- brain-web 24/24 verde após o fix (wiring guard intacto).
+
+### E-08 (EC-08/RF-11) — 360px bottom-sheet + Esc — PASS
+- Método: resize_page barrado pelo WM (mínimo 1280 — mesmo que batch1);
+  viewport emulado via CDP (emulate viewport 360x800x2,mobile,touch):
+  innerWidth=360, `(max-width:480px)` matches.
+- Drawer a 360px: aberto, scrollW=360, **overflowX=0**, painel 360×560
+  (=100% largura, 70vh de 800, ancorado na base top=240/bottom=800).
+- Esc (press_key): drawer fechado + foco no invocador (data-read=0) +
+  query intacta (`n-0001`).
+- Screenshot 360px: accept/harness-verify-360-drawer.png (PNG 720×1600,
+  DSF 2; o 1º take estourou timeout MCP mas o arquivo gravou válido).
+
+### E-04 (EC-04/RF-13) — reduce-motion 0 RAF — PASS (método declarado)
+- Método: devtools MCP não emula media-features → stub via initScript
+  pré-load (equivale a Page.addScriptToEvaluateOnNewDocument):
+  matchMedia('(prefers-reduced-motion: reduce)') → matches:true + wrapper
+  contador em requestAnimationFrame.
+- Resultado: **__rafCalls=0 do load ao render + 3 s parado**, grafo
+  desenhado estático (27 labels), canvas role=img, graph-alt 65 chars.
+- Limite honesto: o stub cobre consumidores JS de matchMedia; a regra CSS
+  `@media (prefers-reduced-motion: reduce)` (viewer/index.html:70-72)
+  verificada estaticamente — sem CDP Emulation.setEmulatedMedia não há
+  como observar o CSS em runtime. Declarado, não escondido.
+
+### Console / network / i18n — PASS
+- Console: 0 messages (pages search-500 e graph-1502).
+- Network (devtools + curl): doc 304, status/search/list/read/graph/events
+  **200**, SSE abre (`event: endpoint`); zero 4xx/5xx em qualquer captura.
+- i18n: `lang=pt-BR`, título PT-BR, badge/degraded PT, sugestão empty e
+  anúncio freeze verbatim PT (snapshots a11y).
+- Badge com coverage 0%: `🟡 Degraded · 500 notes · 500 chunks ·
+  embedding 0% (500 awaiting embed)` — precedência RF-12 correta.
+
+### Screenshots (accept/, PNG válidos)
+- harness-verify-drawer.png 1280×720 (drawer desktop)
+- harness-verify-graph-41.png 1280×720 (boundary-41)
+- harness-verify-graph-1502-frozen.png (freeze + anúncio)
+- harness-verify-360-drawer.png 720×1600 = 360px@2x (bottom-sheet)
+
+## Workspace (tarefa 1)
+
+`cargo test --workspace` exit 0 — **516 passed / 0 failed** (soma dos
+summaries `test result`), == workflow-state.json (516/516).
+Contagem por binário (full runs): brain-cli main 95 · cli_e2e 27 ·
+help_overview 13 · hook_project_resolution 26 · mcp_sse_window 5 ·
+serve_mcp_shutdown 1 · serve_viewer_shutdown 2 · server_start 8 ·
+server_start_stdio_shutdown 2 · setup_interactive 33 ·
+store_project_warning 2 · brain-core 16 · brain-embed 0+37+28=65 ·
+brain-mcp 68+29+2=99 · brain-store 78+6+2=86 · brain-web 24 ·
+doc-tests 0. Soma full-runs = 504 únicos executados.
+Justificativa 515/516 por escrito: nenhum teste removido
+(`git status`: só viewer/index.html modificado; código de teste = HEAD) e
+nenhum filtro de runner (todos `0 filtered out` nas suites reais). A
+diferença é artefato de contagem: 12 summaries extras `1 passed;
+94 filtered out` são auto-invocações filhas do binário `brain`
+(config::concurrency re-executa o próprio binário com filtro — cada filha
+imprime seu summary e sua linha `writer_process ... ok`, 12 ocorrências);
+1 linha colidida por paralelismo
+(`writer_process ... a_missing_brain_dir_is_created ... okok`) escapa ao
+grep estrito. 516 = soma summaries (método do workflow-state); 515 =
+ocorrências em linhas `^test` (514 linhas, 1 dupla); 504 = únicos
+executados; 0 failed em qualquer método. Log completo: /tmp/opencode/ws-test.log.
+Recomendação: workflow-state passar a registrar `test_unique` além da soma.
+
+## data/brain.db.bak (tarefa 2)
+
+- Pré-checagem: prod integrity ok, 909 notes / 3617 chunks, mtime intacto.
+- `.bak` (17 MB, 2026-10-12, stale, untracked, fora do .gitignore que só
+  cobre `brain.db-*`) removido + órfãos `-shm/-wal` da minha própria leitura
+  (abri o .bak em WAL antes do rm). Pós: `git status` só
+  `M viewer/index.html` + `?? .spec/`; prod re-verificada ok/909.
+
+## Lighthouse (tarefa 4)
+
+Modo **navigation**, desktop, URL /#search, viewport emulado 1280 desktop:
+**a11y 94 ≥ 90 — PASS** (best-practices 100, SEO 90, agentic 100).
+Relatórios: accept/lighthouse/report.{json,html}.
+4 audits <1 (P3, vão p/ roadmap, não bloqueiam ≥90): color-contrast,
+label-content-name-mismatch, landmark-one-main, meta-description.

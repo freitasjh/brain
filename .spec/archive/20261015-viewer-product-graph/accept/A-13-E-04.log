@@ -1,0 +1,10 @@
+# A-13 + E-04 (RF-13) — P2-03
+
+BASELINE (pré-edit): FAIL parcial.
+- `role="img"` + `aria-label` no canvas: presente (1 hit, `renderGraph` template).
+- `aria-live`: 6 hits (3 banners + 2 results + `#graph-freeze`) — presente.
+- Faltas: controles sem `aria-*` (layer pills sem `aria-pressed`, search/browse buttons sem `aria-label`, graph-filter sem `aria-label`); drawer sem foco gerenciado (não existe); sem `@media (prefers-reduced-motion)` no CSS (só branch JS `reduced` → physics+draw estático, sem RAF — ok no JS, sem sinal CSS); Lighthouse a11y não medido nesta batch.
+- E-04: branch `reduced` existe (physics 30× + draw, zero RAF) — pan/zoom manual intacto (handlers fora do RAF).
+
+PÓS-EDIT: `aria-pressed` sync em `setLayerByName` (6 hits) + `aria-label` buscar/listar/filtro-grafo + drawer `role=dialog aria-modal aria-labelledby` + `#drawer-body aria-live=polite` + foco open/close + CSS `@media (prefers-reduced-motion: reduce)` (JS `reduced` já era zero-RAF) + `role=group` nas pills.
+A-13 + E-04: PASS (código). Greps: `aria-live`==7, `aria-pressed`==6, `prefers-reduced-motion`==3, `role="img"`==1. Lighthouse ≥90 + reduce-motion 0 RAF pendentes no harness abaixo.

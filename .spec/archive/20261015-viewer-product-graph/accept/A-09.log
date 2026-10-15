@@ -1,0 +1,5 @@
+# A-09 (RF-09) — P1-07
+
+BASELINE: mecânica PASS parcial, anúncio FAIL.
+PÓS-EDIT: n>1500 → freezeEl.textContent anúncio visível dedicado (aria-live polite, :empty esconde); RAF de layout parado (graphFrozen + return); deriva 0.2× só abaixo do teto (physics(0.2)); boundary exato n>GRAPH_FROZEN_AT (1500 ativo, 1501 congela); reduced-motion estático mantido.
+A-09: PASS (estático). Anúncio + RAF parado verificados no harness (fixture-1501).

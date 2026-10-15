@@ -11,6 +11,7 @@
 
 ## Aba Grafo (viewer-graph)
 - 4ª view `renderGraph()` em `viewer/index.html`: canvas force-directed próprio (~8–12 KB JS, `requestAnimationFrame`, pan/zoom por transform), sem deps/build/CDN; lê `GET /api/graph?project=` (`{nodes,edges,dangling,projects}`, ids verbatim p/ `/api/read`, hubs `projeto:<nome>`); layout congela acima de 1500 nós com anúncio visível; deriva lenta 0.2× abaixo do teto, `prefers-reduced-motion` → estático
+- Produto (viewer-product-graph): 3 tabs Buscar/Explorar/Grafo (navegação única); drawer lateral de leitura via `/api/read` (id verbatim, `Esc` fecha, bottom-sheet em 360px, tabs scrolláveis); legenda 6-hex fixa (Noite `#0d1117`, Papel `#c9d1d9`, Link `#58a6ff`, Trilha `#3fb950`, Guia `#f0883e`, Orfã `#484f58`); cap 40 labels + anti-colisão; alfa arestas 0.35→0.55 (hover/seleção); hub quadrado Guia 6px, nota círculo 3px, órfã círculo vazado; header produto com badge status (`/api/status` coverage + `queue.*`, `(N awaiting embed)` abaixo de 100%) + footer `API_BASE`; feedback por banner inline (loading/erro/vazio, sem toast); `Esc` limpa busca; SSE `ensureGraphEventSource()` idempotente mantido; fetch com `AbortController` 3 s; XSS via `escapeHtml()` (sem `innerHTML` cru)
 
 ## Testing (se viewer evoluir)
 - Teste axum handler via `cargo test -p brain-web` com `tower::ServiceExt::oneshot`
