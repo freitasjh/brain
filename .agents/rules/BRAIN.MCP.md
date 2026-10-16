@@ -28,8 +28,8 @@ Regras de uso: `.agents/rules/BRAIN.MCP.md`
   ],
   "mcpServers": {
     "brain": {
-      "transport": "sse",
-      "url": "http://localhost:8321/sse"
+      "transport": "http",
+      "url": "http://localhost:8321/mcp"
     }
   }
 }
@@ -305,7 +305,13 @@ Este projeto usa o [Brain MCP Server](../brain/) para memória persistente.
 
 ### Configuração MCP
 
-O servidor brain roda em modo SSE em `http://localhost:8321/sse`.
+O servidor brain roda com dois transportes MCP na mesma porta: **Streamable HTTP** em
+`http://localhost:8321/mcp` (é este que clientes novos usam — opencode V2, Claude
+Desktop atual) e o **SSE legado** em `http://localhost:8321/sse` (mantido para
+clientes antigos). Config nova aponta para `/mcp`.
+
+> **Por que não `/sse` no opencode V2:** o transporte Streamable HTTP é só `POST`.
+> Apontado para `/sse`, que é `GET`, o opencode V2 falha com `405` e não conecta.
 
 ### Regras de uso obrigatórias
 

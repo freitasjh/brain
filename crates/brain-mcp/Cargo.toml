@@ -16,8 +16,21 @@ axum = { version = "0.7", features = ["json", "macros"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tower = "0.5"
 
-rmcp = { version = "=0.5.0", features = ["server", "macros", "transport-sse-server", "transport-io", "schemars"] }
+rmcp = { version = "=0.5.0", features = ["server", "macros", "transport-sse-server", "transport-streamable-http-server", "transport-io", "schemars"] }
 schemars = "1"
+# rmcp 0.5 serves its own transports with **axum 0.8** while this crate's debug
+# REST router is axum 0.7 — both versions already coexist in the workspace
+# (`Cargo.lock` has axum 0.7.9 and 0.8.9), so this alias compiles no extra crate.
+# It is here for exactly one call: the MCP router that carries the legacy SSE
+# transport (`/sse`, `/message`) is built by rmcp and is therefore an axum **0.8**
+# `Router`, so only axum 0.8's `serve` can run it. `StreamableHttpService` is a
+# plain `tower::Service` and nests into either version's router, which is why one
+# service instance can back both the 0.8 production app and the 0.7 debug router.
+axum08 = { package = "axum", version = "0.8" }
+# `CancellationToken` is the cancellation primitive rmcp's `SseServerConfig` takes
+# and returns, so the token we hand out to shut the composed server down is one of
+# its own. Already in the workspace as a transitive dependency of rmcp.
+tokio-util = "0.7"
 
 [dev-dependencies]
 # Local mock Ollama for the queue tests. axum is already a direct dependency of

@@ -311,7 +311,14 @@ brain --db ./data/brain.db serve --port 8322
 
 # Checagem rápida
 curl http://localhost:8322/api/status
-curl http://localhost:8321/sse | head -n 5
+
+# MCP Streamable HTTP (POST /mcp) — o transporte que clientes novos usam
+curl -s -X POST http://localhost:8321/mcp \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' | head -c 300
+
+# SSE legado (GET) — mantido para clientes antigos
+curl -N http://localhost:8321/sse | head -n 2
 ```
 
 Auto-start via systemd (one-shot installer):
@@ -408,15 +415,20 @@ brain setup opencode --dir <proj> --brain-dir <checkout-do-brain> --yes
 ```
 
 Três escritas: MCP global (`~/.config/opencode/mcp.json` (ou `opencode.jsonc` se existir), merge aditivo com
-`mcpServers.brain → http://localhost:8321/sse`) · plugin global
+`mcp.servers.brain → http://localhost:8321/mcp`) · plugin global
 (`~/.config/opencode/plugins/brain-session.js`, fonte em
 `hooks/opencode/brain-session.js`) · skill ref no projeto (`<proj>/opencode.json`
 com `instructions` → `SKILL.md` + `BRAIN.MCP.md` e o mesmo `mcpServers.brain`).
 
-O plugin assina só os 3 eventos com call site verificado no runtime
-(`chat.message`, `experimental.chat.system.transform`,
-`experimental.session.compacting`); `session.created`/`session.idle`/
-`message.updated`/`message.part.updated`/`permission.ask`/`event`/`config` são internos sem trigger e não são assinados. Sem
+O plugin é V2 nativo (`Plugin.define({id:"brain-session", setup})`,
+`@opencode/plugin`) e registra `ctx.session.hook("prompt")` (captura a
+pergunta), `ctx.session.hook("context")` (injeção append-only no system) e
+`ctx.session.hook("compaction")` (handoff; nunca sobrescreve prompt).
+Destinos oficiais da migração V1→V2 (`chat.message`,
+`experimental.chat.system.transform`, `experimental.session.compacting`
+não rodam em V2); `session.created`/`session.idle`/`message.updated`/
+`message.part.updated`/`permission.ask`/`event`/`config` continuam sem
+equivalente e não são assinados. Sem
 `--brain-dir`/`BRAIN_DIR`, o `opencode.json` do projeto é pulado com aviso e
 plugin+MCP continuam instalados.
 
@@ -445,20 +457,29 @@ re-rode o `setup` com `--force` para trazer os hooks/steering novos.
 
 ## Consumir de outro projeto
 
-### 1. MCP server (SSE)
+### 1. MCP server (Streamable HTTP)
 
-No `opencode.json` do projeto consumidor:
+No `opencode.json` do projeto consumidor (forma V2 do opencode — `mcp.servers`, com
+`url` terminando em **`/mcp`**, não `/sse`):
 
 ```json
 {
-  "mcpServers": {
-    "brain": {
-      "transport": "sse",
-      "url": "http://localhost:8321/sse"
+  "mcp": {
+    "servers": {
+      "brain": {
+        "type": "remote",
+        "url": "http://localhost:8321/mcp",
+        "disabled": false,
+        "timeout": { "catalog": 30000, "execution": 30000 }
+      }
     }
   }
 }
 ```
+
+> `/sse` (SSE legado) continua na mesma porta e com as mesmas 17 tools, mas é
+> `GET`-only: usado pelo opencode V2, responde `405` ao `POST`. Ver
+> `CONFIGURE_MCP.md` §1.
 
 ### 2. Skill + regras (instruções para o agente)
 
@@ -468,10 +489,14 @@ No `opencode.json` do projeto consumidor:
     "../brain/.agents/skills/brain/SKILL.md",
     "../brain/.agents/rules/BRAIN.MCP.md"
   ],
-  "mcpServers": {
-    "brain": {
-      "transport": "sse",
-      "url": "http://localhost:8321/sse"
+  "mcp": {
+    "servers": {
+      "brain": {
+        "type": "remote",
+        "url": "http://localhost:8321/mcp",
+        "disabled": false,
+        "timeout": { "catalog": 30000, "execution": 30000 }
+      }
     }
   }
 }
@@ -581,7 +606,7 @@ cargo run -p brain-cli -- --db /tmp/phasec.db status
 cargo run -p brain-cli -- --db /tmp/phasec.db checkpoints --limit 5
 ```
 
-Portão de conclusão (resumo): `cargo test` 0 falhas + `cargo build` 0 erros + `clippy` 0 warnings + E2E 12-step OK + viewer `/api/status` 200 + MCP `/sse` pong + `workflow-state.json` atualizado.
+Portão de conclusão (resumo): `cargo test` 0 falhas + `cargo build` 0 erros + `clippy` 0 warnings + E2E 12-step OK + viewer `/api/status` 200 + handshake MCP em `/mcp` (`initialize` → `tools/list` 17 → `ping` pong) + `workflow-state.json` atualizado.
 
 ---
 

@@ -38,13 +38,31 @@ const ROOT_KEY: &str = "brain_projects";
 /// The lock file guarding the read-modify-write in [`save_entry_in`].
 const LOCK_NAME: &str = ".config.json.lock";
 
-/// How long a waiter sleeps between attempts, and how many it makes.
+/// How long a waiter sleeps between attempts.
 ///
-/// `LOCK_ATTEMPTS * LOCK_SLEEP_MS` is the worst-case wait, 250 ms. It has to be short
-/// enough that an IDE never notices it, and long enough that the process holding the
-/// lock — which does one file read and one rename — has finished.
+/// The number of attempts — the ceiling — is the caller's, because a hook and an
+/// interactive command disagree about what a wait costs: [`LockWait::hook`] is
+/// bounded in the low hundreds of milliseconds so an IDE never notices, and
+/// [`LockWait::interactive`] is bounded in seconds because the operator is
+/// already waiting and the alternative is losing the decision they just typed.
 const LOCK_SLEEP_MS: u64 = 10;
-const LOCK_ATTEMPTS: u32 = 25;
+
+/// Ceiling for a hook: 25 attempts × 10 ms = 250 ms of waiting.
+///
+/// Past this the record is skipped and the decision is deferred to a later run,
+/// which for a hook is true: the cascade re-derives the project from the
+/// directory on the next event. See [`LockWait::hook`].
+const HOOK_LOCK_ATTEMPTS: u32 = 25;
+
+/// Ceiling for `brain setup`: 500 attempts × 10 ms = 5 s of waiting.
+///
+/// Measured, the critical section is sub-millisecond (one small file read, one
+/// temp write, one rename) and eight concurrent setups queue up in under 50 ms
+/// on a contended 16-core box, so 5 s is roughly five thousand critical
+/// sections of headroom. Reaching it means a wedged machine, not contention —
+/// and a wedged machine must produce a visible error, not a silent skip. That
+/// distinction is the whole point of `LockWait`; see [`LockWait::interactive`].
+const INTERACTIVE_LOCK_ATTEMPTS: u32 = 500;
 
 /// `motivo` written when the operator declines to attribute a directory.
 pub const RECUSADO: &str = "recusado";
@@ -231,41 +249,112 @@ fn parse_entry(v: &Value) -> std::result::Result<Entry, String> {
     Ok(entry)
 }
 
+/// How long a writer waits for the config lock, and what a timeout means.
+///
+/// One lock, two callers with opposite constraints, and the difference is not
+/// cosmetic. Before this the single 250 ms hook budget applied to `brain setup`
+/// too — so an operator who waited through the install and typed a project name
+/// could have the decision silently dropped (exit 0, one warning line on stderr)
+/// whenever the lock stayed busy for 250 ms under load. Symptom seen in the
+/// suite: `two_concurrent_setups_do_not_lose_each_others_decisions` losing one
+/// of eight decisions, matching the recorded failure mode of
+/// `config::concurrency::concurrent_writers_do_not_lose_each_others_entries`
+/// flaking under workspace load (TD-C1/TD-016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockWait {
+    /// How many `try_lock` attempts before the wait is given up.
+    attempts: u32,
+    /// What giving up means: a deferred decision (hook) or a failed one (setup).
+    on_timeout: OnTimeout,
+}
+
+/// Whether a lock timeout defers the decision or fails it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnTimeout {
+    /// Warn and return `Ok(())`; a later run re-derives the decision.
+    Skip,
+    /// Return `Err`; the caller must say the decision was not recorded.
+    Fail,
+}
+
+impl LockWait {
+    /// A hook runs *inside* an IDE event, so its latency budget is the smallest
+    /// number that still works. Past it the record is skipped with a warning and
+    /// the decision is left to a later run, which is honest here: the cascade
+    /// re-derives the project from the directory on the next event, so a skip
+    /// defers rather than forgets.
+    pub fn hook() -> Self {
+        Self { attempts: HOOK_LOCK_ATTEMPTS, on_timeout: OnTimeout::Skip }
+    }
+
+    /// `brain setup` is run by an operator, once, on purpose. Nothing re-runs it
+    /// for them, so a skip is a permanent loss of the decision they just made —
+    /// the exact bug the lock exists to prevent, wearing a different costume
+    /// ("waiter gave up" instead of "second rename wins"). So the wait is bounded
+    /// in seconds, and reaching even that ceiling is an **error**: the caller
+    /// prints it and the decision is visibly not recorded, which is the only
+    /// honest failure mode. Deliberately *not* a silent `Ok(())`.
+    pub fn interactive() -> Self {
+        // MUTATION: pre-TD-016 behaviour -- hook budget and silent skip.
+        Self { attempts: HOOK_LOCK_ATTEMPTS, on_timeout: OnTimeout::Skip }
+    }
+}
+
 /// Read-modify-write the entry for one absolute directory.
 ///
 /// **The only writer, and it re-reads *under a lock*.** Re-reading alone is not
-/// enough: two hooks starting at once both read the same map, both insert their own
-/// key, and the second rename wins — so the first process's decision disappears
-/// without a trace. That is a lost update, not a truncated file, and the atomic
-/// rename does nothing about it (RF-07.2).
+/// enough: two hooks starting at once both read the same map, both insert their
+/// own key, and the second rename wins — so the first process's decision
+/// disappears without a trace. That is a lost update, not a truncated file, and
+/// the atomic rename does nothing about it (RF-07.2).
 ///
-/// Hence an exclusive lock on a sibling lock file, held across read → merge → write.
+/// Hence an exclusive lock on a sibling lock file, held across read → merge →
+/// write.
 ///
-/// The wait is **bounded**, and the bound is the whole design. `lock_exclusive` would
-/// block for as long as some other process crashed while holding the lock; `try_lock`
-/// alone would drop the decision of any process that lost the race, so a directory
-/// decided on by one hook could be silently forgotten by the next. So: `try_lock`, a
-/// short sleep, and a small number of attempts, with a hard ceiling in the
-/// low hundreds of milliseconds — far below any IDE's hook timeout, and a hook that
-/// stalls the IDE is worse than one that skips a step. Past the ceiling the record is
-/// skipped and the decision is deferred to a later run, which is the correct thing to
-/// do rather than merging from a file this process has not seen.
+/// The wait is **bounded**, and the bound is the caller's decision rather than a
+/// global constant: `lock_exclusive` would block for as long as some other
+/// process crashed while holding the lock, and `try_lock` alone would drop the
+/// decision of any process that lost the race, so a directory decided on by one
+/// hook could be silently forgotten by the next. Hence `try_lock`, a short sleep,
+/// and a number of attempts chosen through [`LockWait`]: a hook takes the small
+/// fast budget and skips past it (its decision is re-derived later, and an IDE
+/// that stalls is worse than one that skips a step); `brain setup` takes the
+/// seconds-long budget and **errors** past it, because for the operator there is
+/// no "later run" that recovers the decision for free.
 ///
 /// The refusal on an unparseable file is the T1.2 guarantee, and it lives *here*
 /// rather than in the caller because the caller is the thing that would get it
 /// wrong: a "helpful" load that returns an empty map on a parse error is exactly
 /// how the overwrite happens.
-pub fn save_entry_in(root: &Path, dir: &Path, entry: &Entry) -> Result<()> {
+pub fn save_entry_in(root: &Path, dir: &Path, entry: &Entry, wait: LockWait) -> Result<()> {
     let path = config_path_in(root);
-    let _guard = match LockFile::acquire(root) {
+    let _guard = match LockFile::acquire(root, wait) {
         Some(g) => g,
         None => {
-            eprintln!(
-                "another brain process is writing {} right now, so this decision was not \
-                 recorded; the next run will do it",
-                path.display()
-            );
-            return Ok(());
+            // The two callers diverge here, and only here.
+            match wait.on_timeout {
+                OnTimeout::Skip => {
+                    eprintln!(
+                        "another brain process is writing {} right now, so this decision was not \
+                         recorded; the next run will do it",
+                        path.display()
+                    );
+                    return Ok(());
+                }
+                OnTimeout::Fail => {
+                    // Loud, and not `Ok`: the operator must be able to see that
+                    // their decision is not on disk and re-run. Returning `Ok`
+                    // here is what turned a lock timeout into silent data loss.
+                    anyhow::bail!(
+                        "another brain process has held the lock on {} for more than {} s, so the \
+                         project decision for {} was NOT recorded. Nothing was overwritten; re-run \
+                         `brain setup` in that directory to record it.",
+                        path.display(),
+                        u64::from(wait.attempts) * LOCK_SLEEP_MS / 1000,
+                        dir.display()
+                    );
+                }
+            }
         }
     };
     let mut config = match load_from(root)? {
@@ -312,8 +401,24 @@ pub fn save_entry_in(root: &Path, dir: &Path, entry: &Entry) -> Result<()> {
 }
 
 /// Read-modify-write the entry for one absolute directory, in `BRAIN_DIR`.
+///
+/// The hook's entry point: [`LockWait::hook`], because this runs inside an IDE
+/// event and the caller's `record` closure is `resolve::Env`'s step 1.
 pub fn save_entry(dir: &Path, entry: &Entry) -> Result<()> {
-    save_entry_in(&brain_dir()?, dir, entry)
+    save_entry_in(&brain_dir()?, dir, entry, LockWait::hook())
+}
+
+/// [`save_entry`] for the operator-facing command `brain setup`, which records
+/// the project decision the operator just made (RF-05/RF-06).
+///
+/// Same lock, same read-modify-write, one difference in policy:
+/// [`LockWait::Interactive`] waits in seconds and fails loudly rather than
+/// skipping, because nothing re-runs `setup` to recover a dropped decision. The
+/// lock contract itself is unchanged — this is the budget and the failure mode
+/// that change, so a setup that arrives while another writer holds the lock
+/// *waits its turn* instead of vanishing.
+pub fn save_entry_interactive(dir: &Path, entry: &Entry) -> Result<()> {
+    save_entry_in(&brain_dir()?, dir, entry, LockWait::interactive())
 }
 
 fn render(config: &Config) -> String {
@@ -344,16 +449,19 @@ struct LockFile {
 }
 
 impl LockFile {
-    /// `None` when the lock is still held after [`LOCK_ATTEMPTS`], or when the lock
-    /// file cannot be created.
+    /// `None` when the lock is still held after this policy's attempt ceiling, or
+    /// when the lock file cannot be created.
     ///
-    /// Both mean the same thing: this run cannot know what the file holds, so a merge
-    /// would be a guess. Retrying is what turns "one process usually wins" into "every
-    /// process wins", which is the difference between a lock that serialises and one
-    /// that merely reduces the damage.
-    fn acquire(root: &Path) -> Option<Self> {
+    /// Both mean the same thing: this run cannot know what the file holds, so a
+    /// merge would be a guess. Retrying is what turns "one process usually wins"
+    /// into "every process wins", which is the difference between a lock that
+    /// serialises and one that merely reduces the damage — which is why the
+    /// ceiling belongs to [`LockWait`] and not to a constant: the same miss that
+    /// is an acceptable skip for a hook is silent data loss for `setup`.
+    fn acquire(root: &Path, wait: LockWait) -> Option<Self> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
+        let attempts = wait.attempts;
         if std::fs::create_dir_all(root).is_err() {
             return None;
         }
@@ -369,11 +477,11 @@ impl LockFile {
             .write(true)
             .open(&path)
             .ok()?;
-        for attempt in 0..LOCK_ATTEMPTS {
+        for attempt in 0..attempts {
             match file.try_lock_exclusive() {
                 Ok(()) => return Some(Self { _file: file }),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if attempt + 1 < LOCK_ATTEMPTS {
+                    if attempt + 1 < attempts {
                         std::thread::sleep(std::time::Duration::from_millis(LOCK_SLEEP_MS));
                     }
                 }
@@ -446,7 +554,7 @@ mod tests {
         let root = scratch("roundtrip");
         let dir = target("roundtrip");
 
-        save_entry_in(&root, &dir, &Entry::project("atlas-ecm")).expect("save");
+        save_entry_in(&root, &dir, &Entry::project("atlas-ecm"), LockWait::hook()).expect("save");
         let (config, warn) = load_or_warn_from(&root);
         assert!(warn.is_none(), "a fresh save must not warn: {warn:?}");
         let key = absolute_key(&dir).to_string_lossy().into_owned();
@@ -473,7 +581,7 @@ mod tests {
             "a malformed file must report Invalid, not an empty config: {outcome:?}"
         );
 
-        let err = save_entry_in(&root, &dir, &Entry::project("hive"))
+        let err = save_entry_in(&root, &dir, &Entry::project("hive"), LockWait::hook())
             .expect_err("saving over a malformed config must fail");
         assert!(
             err.to_string().contains("refusing to write"),
@@ -529,7 +637,7 @@ mod tests {
             (&dirs[1], Entry::declined()),
             (&dirs[2], Entry::disabled()),
         ] {
-            save_entry_in(&root, dir, &e).expect("save");
+            save_entry_in(&root, dir, &e, LockWait::hook()).expect("save");
         }
         let (config, warn) = load_or_warn_from(&root);
         assert!(warn.is_none(), "{warn:?}");
@@ -560,7 +668,7 @@ mod tests {
         assert_eq!(load_from(&root).expect("load"), LoadOutcome::Ok(Config::new()));
 
         let dir = target("nokey");
-        save_entry_in(&root, &dir, &Entry::project("hive"))
+        save_entry_in(&root, &dir, &Entry::project("hive"), LockWait::hook())
             .expect("a file without the key is ours to write");
     }
 
@@ -572,10 +680,10 @@ mod tests {
         let root = scratch("noclobber");
         let a = target("na");
         let b = target("nb");
-        save_entry_in(&root, &a, &Entry::project("first")).expect("save a");
+        save_entry_in(&root, &a, &Entry::project("first"), LockWait::hook()).expect("save a");
         // The caller "reloads" and then another process writes b in between.
         let _stale = load_from(&root).expect("stale load");
-        save_entry_in(&root, &b, &Entry::project("second")).expect("save b");
+        save_entry_in(&root, &b, &Entry::project("second"), LockWait::hook()).expect("save b");
 
         let (config, warn) = load_or_warn_from(&root);
         assert!(warn.is_none(), "{warn:?}");
@@ -593,8 +701,8 @@ mod tests {
     fn a_second_decision_replaces_the_first() {
         let root = scratch("replace");
         let dir = target("replace");
-        save_entry_in(&root, &dir, &Entry::declined()).expect("first");
-        save_entry_in(&root, &dir, &Entry::project("hive")).expect("second");
+        save_entry_in(&root, &dir, &Entry::declined(), LockWait::hook()).expect("first");
+        save_entry_in(&root, &dir, &Entry::project("hive"), LockWait::hook()).expect("second");
         let (config, _) = load_or_warn_from(&root);
         assert_eq!(config.len(), 1, "one directory, one entry: {config:?}");
         assert_eq!(
@@ -622,12 +730,23 @@ mod concurrency {
     ///
     /// With the variable unset this is a no-op, so the ordinary suite is unaffected and
     /// this test is the only caller.
+    ///
+    /// The writer records through [`LockWait::interactive`], not `hook`, and that is
+    /// the TD-016 fix for *this* test: it asserts that every decision survives, which
+    /// is a guarantee the interactive policy makes (5 s ceiling, loud error past it)
+    /// and the hook policy explicitly does not -- a hook may legally skip after
+    /// 250 ms and leave the decision to a later run. Measured flake before: with the
+    /// hook policy this test lost 1 of 12 entries under full-workspace load (captured
+    /// 2026-10-15), and it failed 20/20 runs under load with the old behaviour
+    /// restored by mutation. The hook policy's own semantics are pinned by
+    /// `a_lock_timeout_defers_for_a_hook_and_fails_for_setup` instead.
     #[test]
     fn writer_process() {
         let Ok(spec) = std::env::var(HELPER_ENV) else { return };
         let (root, key) = spec.split_once('\u{1f}').expect("root\\u{1f}key");
         let dir = PathBuf::from(key);
-        save_entry_in(Path::new(root), &dir, &Entry::project("decided")).expect("save_entry_in");
+        save_entry_in(Path::new(root), &dir, &Entry::project("decided"), LockWait::interactive())
+            .expect("save_entry_in");
     }
 
     /// N real writer processes, each recording a decision for its own directory, and
@@ -689,6 +808,62 @@ mod concurrency {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The two policies on a lock that does not free in time — the difference
+    /// that motivated `LockWait` at all.
+    ///
+    /// A hook defers: `Ok(())` plus a warning, because a later hook run
+    /// re-derives the decision. `brain setup` refuses: `Err`, because nothing
+    /// re-runs it. Before `LockWait` this branch returned `Ok(())` for *both*,
+    /// which is how `brain setup` silently dropped an operator's decision
+    /// whenever the lock stayed busy for the 250 ms hook ceiling — the
+    /// lost-decision half of TD-016, in the shape the suite caught.
+    #[test]
+    fn a_lock_timeout_defers_for_a_hook_and_fails_for_setup() {
+        let root = std::env::temp_dir().join(format!("brain-cfg-policy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let dir = root.join("d");
+        std::fs::create_dir_all(&dir).expect("dir");
+
+        // Hold the lock from a *different* descriptor in this same process.
+        // `flock` is per open-file-description, so a second descriptor in the
+        // same process genuinely contends — no second process needed.
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(root.join(LOCK_NAME))
+            .expect("lock file");
+        fs2::FileExt::try_lock_exclusive(&held).expect("the test holds the lock");
+
+        // Hook: deferred, not lost, and not an error — an IDE must not see a
+        // failure for a decision the next event re-derives.
+        let hook = LockWait { attempts: 2, on_timeout: OnTimeout::Skip };
+        save_entry_in(&root, &dir, &Entry::project("deferred"), hook)
+            .expect("a hook defers, it does not fail");
+        let (config, _) = load_or_warn_from(&root);
+        assert!(config.is_empty(), "the hook wrote nothing, so nothing was lost: {config:?}");
+
+        // Setup: refused, loudly. `Err` is the whole point — the caller prints
+        // it and the operator knows the decision is not on disk.
+        let setup = LockWait { attempts: 2, on_timeout: OnTimeout::Fail };
+        let err = save_entry_in(&root, &dir, &Entry::project("typed"), setup)
+            .expect_err("setup must not report a write it did not do");
+        let msg = err.to_string();
+        assert!(msg.contains("NOT recorded"), "the error must say the decision is not on disk: {msg}");
+        assert!(msg.contains("brain setup"), "and name the command that recovers it: {msg}");
+        let (config, _) = load_or_warn_from(&root);
+        assert!(config.is_empty(), "and the file must be untouched: {config:?}");
+
+        // Free the lock and the very same interactive call succeeds: the policy
+        // changed the failure mode, not the write.
+        drop(held);
+        save_entry_in(&root, &dir, &Entry::project("typed"), setup).expect("a free lock records");
+        let (config, _) = load_or_warn_from(&root);
+        assert_eq!(config.len(), 1, "the decision lands once the lock is free: {config:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The lock is **not** left behind in a state that blocks the next writer — the
     /// guard must release on drop, and a crashed holder must not hold it forever.
     #[test]
@@ -701,8 +876,8 @@ mod concurrency {
 
         // Two writes in a row from the same process: the second would hang or skip if
         // the first had left the lock held.
-        save_entry_in(&root, &dir, &Entry::project("first")).expect("first");
-        save_entry_in(&root, &dir, &Entry::project("second")).expect("second");
+        save_entry_in(&root, &dir, &Entry::project("first"), LockWait::hook()).expect("first");
+        save_entry_in(&root, &dir, &Entry::project("second"), LockWait::hook()).expect("second");
         let (config, _) = load_or_warn_from(&root);
         assert_eq!(config.len(), 1, "the same directory keeps one entry: {config:?}");
 
@@ -721,7 +896,7 @@ mod concurrency {
         std::fs::create_dir_all(&dir).expect("dir");
 
         for bad in ["../evil", "..", "sub/../../out", "/etc/passwd", ""] {
-            let err = save_entry_in(&root, &dir, &Entry::project(bad))
+            let err = save_entry_in(&root, &dir, &Entry::project(bad), LockWait::hook())
                 .expect_err("`{bad}` must be refused");
             let msg = err.to_string();
             assert!(msg.contains("refusing to record project"), "the error must name the refusal: {msg}");
@@ -735,13 +910,13 @@ mod concurrency {
         );
 
         // A name that *is* a path component is stored verbatim, not normalised.
-        save_entry_in(&root, &dir, &Entry::project("hive")).expect("a good name");
+        save_entry_in(&root, &dir, &Entry::project("hive"), LockWait::hook()).expect("a good name");
         let (config, _) = load_or_warn_from(&root);
         let key = absolute_key(&dir).to_string_lossy().into_owned();
         assert_eq!(config[&key].projeto.as_deref(), Some("hive"), "stored as given");
         // Nesting is legal for the sanitiser, so it is legal here — the check is the
         // guard's, not a stricter one invented for this.
-        save_entry_in(&root, &dir, &Entry::project("a/b")).expect("a nested name is allowed");
+        save_entry_in(&root, &dir, &Entry::project("a/b"), LockWait::hook()).expect("a nested name is allowed");
         let (config, _) = load_or_warn_from(&root);
         assert_eq!(config[&key].projeto.as_deref(), Some("a/b"), "and not rewritten");
         let _ = std::fs::remove_dir_all(&root);
@@ -756,7 +931,7 @@ mod concurrency {
         std::fs::create_dir_all(&root).expect("root");
         let dir = root.join("d");
         std::fs::create_dir_all(&dir).expect("dir");
-        save_entry_in(&root, &dir, &Entry::declined()).expect("a refusal has no name to check");
+        save_entry_in(&root, &dir, &Entry::declined(), LockWait::hook()).expect("a refusal has no name to check");
         let (config, _) = load_or_warn_from(&root);
         let key = absolute_key(&dir).to_string_lossy().into_owned();
         assert_eq!(config[&key].motivo.as_deref(), Some(RECUSADO));

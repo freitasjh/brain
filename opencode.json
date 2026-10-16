@@ -1,84 +1,144 @@
 {
   "$schema": "https://opencode.ai/config.json",
-   "plugin": ["./.opencode/plugins/harness-validator.js", "./.opencode/plugins/hitl-guardrail.js"],
+  "plugins": ["./.opencode/plugins/harness-validator.js", "./.opencode/plugins/hitl-guardrail.js"],
   "instructions": [
     ".agents/rules/*.md"
   ],
-  "permission": {
-    "task": "ask"
-  },
-   "agent": {
-     "orchestrator": {
+  "permissions": [
+    {
+      "action": "subagent",
+      "resource": "*",
+      "effect": "ask"
+    }
+  ],
+  "agents": {
+    "orchestrator": {
       "mode": "primary",
-      "prompt": "{file:./.agents/agents/orchestrator/AGENT.md}",
-      "tools": {
-        "write": false,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/orchestrator/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "developer-engineer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/developer-engineer/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": true,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/developer-engineer/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "codebase-analyzer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/codebase-analyzer/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/codebase-analyzer/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "product-manager": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/product-manager/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/product-manager/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "qa-engineer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/qa-engineer/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/qa-engineer/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "architect": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/architect/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/architect/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "security-engineer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/security-engineer/AGENT.md}",
-      "tools": {
-        "write": true,
-        "edit": false,
-        "bash": true
-      }
+      "system": "{file:./.agents/agents/security-engineer/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "code-reviewer": {
       "mode": "subagent",
-      "prompt": "{file:./.agents/agents/code-reviewer/AGENT.md}",
-      "tools": {
-        "write": false,
-        "edit": false,
-        "bash": true
-      }
-    },
+      "system": "{file:./.agents/agents/code-reviewer/AGENT.md}",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    }
   }
 }

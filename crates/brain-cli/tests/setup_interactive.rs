@@ -614,6 +614,86 @@ fn two_concurrent_setups_do_not_lose_each_others_decisions() {
     }
 }
 
+/// TD-016: the decision an operator just typed must survive a lock held longer
+/// than the **hook's** budget would tolerate — the shape under which
+/// `two_concurrent_setups_do_not_lose_each_others_decisions` lost one of eight
+/// decisions on a loaded box, and under which the unit-level
+/// `concurrent_writers_do_not_lose_each_others_entries` flaked under workspace
+/// load (TD-C1). The lock is held from *this* process with the same `fs2`
+/// primitive the product uses, for 1.5 s: past the 250 ms ceiling the old shared
+/// budget gave up on (exit 0, decision gone), well inside the interactive one.
+///
+/// The assertion is the property, not the timing: the decision is on disk.
+#[test]
+fn a_setup_that_finds_the_lock_held_still_records_the_decision() {
+    let w = World::new("lockwait");
+    let proj = w.proj();
+    let lock_path = w.brain_dir().join(".config.json.lock");
+    // Held before the child is spawned, so the child's `save_entry` — not its
+    // install — is the thing that meets the lock.
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .expect("lock file");
+    fs2::FileExt::try_lock_exclusive(&held).expect("the test holds the lock");
+
+    let db = w.db();
+    let home = w.home();
+    let brain_dir = w.brain_dir();
+    let xdg = w.env();
+    let child_proj = proj.clone();
+    let handle = std::thread::spawn(move || {
+        std::process::Command::new(bin())
+            .current_dir(&child_proj)
+            .arg("--db")
+            .arg(&db)
+            .arg("setup")
+            .arg("opencode")
+            .arg("--project")
+            .arg("proj-waits")
+            .env("HOME", &home)
+            .env("BRAIN_DIR", &brain_dir)
+            .env("XDG_RUNTIME_DIR", &xdg)
+            .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)
+            .env("BRAIN_SETUP_NO_SYSTEMCTL", "1")
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn brain setup")
+    });
+
+    // Past the hook's 250 ms ceiling on purpose: under the old shared budget the
+    // child had already given up by here, with exit 0 and no decision recorded.
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    drop(held);
+
+    let o = handle.join().expect("child thread");
+    assert!(o.status.success(), "setup failed: {}", out(&o));
+    // Tolerating "no file at all" on purpose: under the pre-fix behaviour the
+    // single writer skipped, so `config.json` never existed — and the assertion
+    // below, not a panic in a helper, is what should report that.
+    let entries: serde_json::Map<String, serde_json::Value> =
+        match std::fs::read_to_string(w.brain_dir().join("config.json")) {
+            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                .expect("valid JSON")
+                ["brain_projects"]
+                .as_object()
+                .cloned()
+                .expect("brain_projects"),
+            Err(_) => serde_json::Map::new(),
+        };
+    let key = std::fs::canonicalize(&proj).expect("canonicalize").to_string_lossy().into_owned();
+    assert_eq!(
+        entries.get(&key).and_then(|e| e["projeto"].as_str()),
+        Some("proj-waits"),
+        "the decision must be recorded even though the lock was held past the hook's ceiling: \
+         this is the lost-decision failure TD-016 tracks, and a silent skip here is the bug. \
+         setup stderr: {}\nentries: {entries:?}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
 /// A read-only `BRAIN_DIR` must not take the whole install down with it: the
 /// artifacts are already in place, so a failed record is a warning (RF-07's
 /// "degrade, do not break"), and the exit code stays 0.
@@ -717,15 +797,17 @@ fn setup_opencode_installs_the_session_plugin() {
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("the plugin must be installed at {}: {e}\n{}", path.display(), out(&o)));
     let code = plugin_code(&w.home());
-    assert!(code.contains("export const Plugin"), "the documented export:\n{code}");
-    // SU-01b: só eventos verificados no runtime instalado (Bloco 4, OC-01).
-    for verified in [
-        "experimental.chat.system.transform",
-        "chat.message",
-        "experimental.session.compacting",
-    ] {
-        assert!(code.contains(verified), "the verified event {verified}:\n{code}");
+    assert!(code.contains("Plugin.define"), "the V2 definition:\n{code}");
+    assert!(code.contains("brain-session"), "the stable id:\n{code}");
+    // SU-01b V2: os 3 session.hook (destinos oficiais V1→V2), sem resíduo V1.
+    for hook in ["\"prompt\"", "\"context\"", "\"compaction\""] {
+        assert!(code.contains(hook), "the session hook {hook}:\n{code}");
     }
+    assert!(code.contains("session.hook"), "registered via ctx.session.hook:\n{code}");
+    for gone in ["export const Plugin", "experimental.chat.system.transform", "experimental.session.compacting", "@opencode-ai/plugin"] {
+        assert!(!code.contains(gone), "V1 residue must be gone, found {gone}:\n{code}");
+    }
+    assert!(!code.contains("\"chat.message\""), "V1 key chat.message present:\n{code}");
     // T6.3: the Rust binary, not the Python hook — and MUST FIX 1: an id per call.
     assert!(!code.contains("brain-hook.py"), "R-08: the Python hook is off the path:\n{code}");
     assert!(code.contains("--payload"), "MUST FIX 1: each session needs an id:\n{code}");
@@ -734,7 +816,8 @@ fn setup_opencode_installs_the_session_plugin() {
     let mcp = w.home().join(".config/opencode/mcp.json");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp).expect("mcp.json")).expect("mcp.json parses");
-    assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+    assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+    assert_eq!(v["mcp"]["servers"]["brain"]["type"], "remote");
 
     // SU-01b BDD(1): skill ref no opencode.json do projeto (setup roda em proj/).
     let proj: serde_json::Value = serde_json::from_str(
@@ -803,7 +886,7 @@ fn force_refreshes_the_plugin_and_keeps_the_previous_copy() {
     let forced = w.setup(&["opencode", "--yes", "--force"]);
     assert!(forced.status.success(), "{}", out(&forced));
     let now = std::fs::read_to_string(&path).expect("plugin");
-    assert!(now.contains("export const Plugin"), "--force must regenerate it:\n{now}");
+    assert!(now.contains("Plugin.define"), "--force must regenerate it:\n{now}");
     assert!(
         path.with_extension("bak").exists(),
         "and must keep what it replaced"
@@ -969,8 +1052,8 @@ fn the_kiro_command_records_every_session_it_is_run_for() {
 /// The same property for the opencode artifact, exercised by running the plugin's
 /// hook under `node` three times against the real binary.
 ///
-/// SU-01b: o driver agora é `experimental.session.compacting` (verificado,
-/// OC-02) — `session.created` era evento morto sem trigger. Cada compactação
+/// SU-01b V2: o driver é `ctx.session.hook("compaction")` (destino oficial de
+/// `experimental.session.compacting`, cf. migrate-v1). Cada compactação
 /// registra um handoff `session-end` com id próprio (`Date.now()` + contador
 /// por chamada), então 3 chamadas = 3 seções mesmo no mesmo milissegundo.
 #[test]
@@ -987,55 +1070,23 @@ fn the_opencode_plugin_sends_a_distinct_id_per_invocation() {
         return;
     }
     // Three calls in one process exercise the counter half of the id; the timestamp
-    // half is what separates processes, and the test above covers that for kiro.
-    // A stand-in for Bun's `$` that **actually runs the command**: a stubbed
-    // `text: async () => ""` would prove nothing about which database was written,
-    // which is the whole claim. Tagged-template semantics are reproduced because the
-    // plugin calls `` $`...` ``, and `.cwd()` is honoured because the plugin sets it.
+    // half is what separates processes, and the kiro test covers that half.
+    // V2 harness: default export + mock ctx (`location.directory`,
+    // `session.hook(name, fn)` que registra). O plugin chama o binário real
+    // via `execFile(BRAIN_BIN, …)`, sem shell no caminho — nenhuma regra de
+    // quoting pode mascarar um defeito no plugin.
     let harness = r#"
-import { Plugin } from "./brain-session.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-const run = promisify(execFile);
-
-// A stand-in for Bun's `$`. **Each interpolation is one `argv` entry**, which is what
-// Bun's shell does and what the previous version of this mock got wrong: it concatenated
-// the strings and handed the result to `/bin/sh`, so `${{""}}` produced *nothing* rather
-// than an empty argument. The plugin passes `--question ${{question ?? ""}}`, and
-// compacting legitimately has no question, so the mock turned a valid invocation
-// into `... --question ` — a flag with no value, which clap refuses.
-//
-// Building `argv` and calling `execFile` directly also removes the shell from the path
-// entirely, so no quoting rule of `/bin/sh` can mask a defect in the plugin.
-const $ = (strings, ...values) => {
-  const argv = [];
-  strings.forEach((s, i) => {
-    for (const tok of s.split(/\s+/).filter(Boolean)) argv.push(tok);
-    if (i < values.length) argv.push(String(values[i] ?? ""));
-  });
-  let cwd = process.cwd();
-  const chain = {
-    cwd: (dir) => { cwd = dir; return chain; },
-    nothrow: () => chain,
-    text: async () => {
-      try {
-        const r = await run(argv[0], argv.slice(1), { env: process.env, cwd });
-        return r.stdout;
-      } catch (e) {
-        return String(e.stdout || "") + String(e.stderr || "");
-      }
-    },
-  };
-  return chain;
+import plugin from "./brain-session.js";
+const registered = new Map();
+const ctx = {
+  location: { directory: process.env.BRAIN_TEST_DIR },
+  session: {
+    hook: async (name, fn) => { registered.set(name, fn); return { dispose: () => void registered.delete(name) }; },
+  },
+  options: {},
 };
-
-const hooks = await Plugin({
-  client: { app: { log: () => {} } },
-  $,
-  directory: process.env.BRAIN_TEST_DIR,
-});
-for (let i = 0; i < 3; i++) await hooks["experimental.session.compacting"](
-  { sessionID: "ses_1" }, { context: [], prompt: undefined });
+await plugin.setup(ctx);
+for (let i = 0; i < 3; i++) await registered.get("compaction")({ context: [], prompt: undefined });
 console.log("DONE");
 "#;    let d = w.root.join("harness");
     std::fs::create_dir_all(&d).expect("harness dir");
@@ -1063,6 +1114,7 @@ console.log("DONE");
         .arg(d.join("harness.js"))
         .current_dir(&d)
         .env("BRAIN_TEST_DIR", mapped.to_string_lossy().to_string())
+        .env("BRAIN_BIN", bin())
         .env("BRAIN_DB_PATH", &other)
         .env("PATH", format!("{}:{}", bin().parent().unwrap().display(), std::env::var("PATH").unwrap_or_default()))
         .output()
@@ -1199,12 +1251,15 @@ fn a_stale_binary_in_the_plugin_is_reported() {
     let w = World::new("stale-bin");
     w.setup_ok(&["opencode", "--yes"]);
     // A plugin left behind by an install whose binary has since moved.
-    // (Rewrites to the pre-SU-01b literal shape — also proving the reader
-    // still understands an old installed file on upgrade.)
+    // (Rewrites the V2 fallback literal — also proving the reader
+    // understands the installed file on upgrade.)
     let path = plugin_path(&w.home());
-    let edited = std::fs::read_to_string(&path)
-        .expect("plugin")
-        .replace("process.env.BRAIN_BIN || ", "\"/gone/brain\"; // ");
+    let text = std::fs::read_to_string(&path).expect("plugin");
+    let marker = "process.env.BRAIN_BIN || \"";
+    let s = text.find(marker).expect("V2 fallback") + marker.len();
+    let e = s + text[s..].find('"').expect("closing quote");
+    let mut edited = text.clone();
+    edited.replace_range(s..e, "/gone/brain");
     std::fs::write(&path, edited).expect("edit");
     let before = std::fs::read_to_string(&path).expect("plugin");
 
@@ -1543,16 +1598,15 @@ fn split_blocks(text: &str) -> (String, String) {
     )
 }
 
-/// **RF-04, opencode side (SU-01b).** The question comes from the verified
-/// `chat.message` read: `output.message.role == "user"` + `parts[]` text
-/// (sem mutação). `message.updated`/`message.part.updated` eram eventos mortos
-/// sem trigger no runtime instalado (Bloco 4) — o pareamento por message id
-/// morreu com eles.
+/// **RF-04, opencode side (SU-01b).** The question comes from the `prompt` hook's
+/// user-message read (`message.role == "user"` + `parts[]` text, sem mutação).
+/// V1 `message.updated`/`message.part.updated` eram chaves mortas — o pareamento
+/// por message id morreu com elas.
 ///
-/// Driven with the new payload shape: a user message carrying the question,
-/// then an assistant message pointing at a DIFFERENT note, then a streaming
-/// duplicate of the user message. The first `chat.message` records once
-/// (once por sessão); the assistant's text must never become the question.
+/// Driven with the V2 event shape: a user message carrying the question (via
+/// `prompt`), then `context` for the inject. The assistant's text must never
+/// become the question, and a repeated user message must not re-record
+/// (once por sessão — `ensureStarted`).
 #[test]
 fn the_opencode_plugin_injects_the_user_message_and_never_the_assistants() {
     let w = World::new("p4ocmsg");
@@ -1565,49 +1619,34 @@ fn the_opencode_plugin_injects_the_user_message_and_never_the_assistants() {
     // opencode will load, and `setup` writes `BRAIN_BIN` from the real binary path.
     let code = plugin_code(&w.home());
     std::fs::write(d.join("brain-session.js"), code).expect("plugin");
-    // Reuse the argv-faithful `$` stand-in from the test above; it is the only model of
-    // Bun's shell that can pass an empty `--question`.
+    // Harness V2: default export + mock ctx; `context` injeta (uma vez por
+    // sessão) o que `prompt` registrou.
     let harness = r#"
-import { Plugin } from "./brain-session.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-const run = promisify(execFile);
-const $ = (strings, ...values) => {
-  const argv = [];
-  strings.forEach((s, i) => {
-    for (const tok of s.split(/\s+/).filter(Boolean)) argv.push(tok);
-    if (i < values.length) argv.push(String(values[i] ?? ""));
-  });
-  let cwd = process.cwd();
-  const chain = {
-    cwd: (dir) => { cwd = dir; return chain; },
-    nothrow: () => chain,
-    text: async () => {
-      try { return (await run(argv[0], argv.slice(1), { env: process.env, cwd })).stdout; }
-      catch (e) { return String(e.stdout || "") + String(e.stderr || ""); }
-    },
-  };
-  return chain;
+import plugin from "./brain-session.js";
+const registered = new Map();
+const ctx = {
+  location: { directory: process.env.BRAIN_TEST_DIR },
+  session: {
+    hook: async (name, fn) => { registered.set(name, fn); return { dispose: () => {} }; },
+  },
+  options: {},
 };
-const hooks = await Plugin({
-  client: { app: { log: () => {} } }, $, directory: process.env.BRAIN_TEST_DIR,
-});
+await plugin.setup(ctx);
 
 // The user's question records once; the assistant's text never becomes a
 // question; a streaming duplicate of the user message does not re-record
 // (once por sessão — o segundo evento não re-spawna).
-await hooks["chat.message"](
-  { sessionID: "ses_1" },
+await registered.get("prompt")(
   { message: { role: "user" }, parts: [{ type: "text", text: "kebab-case nos caminhos" }] },
 );
-await hooks["chat.message"](
-  { sessionID: "ses_1" },
+await registered.get("prompt")(
   { message: { role: "assistant" }, parts: [{ type: "text", text: "token" }] },
 );
-await hooks["chat.message"](
-  { sessionID: "ses_1" },
+await registered.get("prompt")(
   { message: { role: "user" }, parts: [{ type: "text", text: "kebab-case nos caminhos" }] },
 );
+const system = [{ type: "text", text: "base" }];
+await registered.get("context")({ system });
 console.log("DONE");
 "#;
     std::fs::write(d.join("harness.js"), harness).expect("harness");
@@ -1616,6 +1655,7 @@ console.log("DONE");
         .arg(d.join("harness.js"))
         .current_dir(&d)
         .env("BRAIN_TEST_DIR", w.root.join("hive").to_string_lossy().to_string())
+        .env("BRAIN_BIN", bin())
         .env("BRAIN_DB_PATH", w.db())
         .env("XDG_RUNTIME_DIR", w.env())
         .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)
@@ -1653,37 +1693,26 @@ fn the_opencode_plugin_does_not_inject_from_an_assistant_message() {
     std::fs::create_dir_all(&d).expect("harness dir");
     let code = plugin_code(&w.home());
     std::fs::write(d.join("brain-session.js"), code).expect("plugin");
+    // Harness V2: assistant-only via `prompt` — o role filter descarta como
+    // pergunta, então `context` degrada para o panorama do projeto.
     let harness = r#"
-import { Plugin } from "./brain-session.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-const run = promisify(execFile);
-const $ = (strings, ...values) => {
-  const argv = [];
-  strings.forEach((s, i) => {
-    for (const tok of s.split(/\s+/).filter(Boolean)) argv.push(tok);
-    if (i < values.length) argv.push(String(values[i] ?? ""));
-  });
-  let cwd = process.cwd();
-  const chain = {
-    cwd: (dir) => { cwd = dir; return chain; },
-    nothrow: () => chain,
-    text: async () => {
-      try { return (await run(argv[0], argv.slice(1), { env: process.env, cwd })).stdout; }
-      catch (e) { return String(e.stdout || "") + String(e.stderr || ""); }
-    },
-  };
-  return chain;
+import plugin from "./brain-session.js";
+const registered = new Map();
+const ctx = {
+  location: { directory: process.env.BRAIN_TEST_DIR },
+  session: {
+    hook: async (name, fn) => { registered.set(name, fn); return { dispose: () => {} }; },
+  },
+  options: {},
 };
-const hooks = await Plugin({
-  client: { app: { log: () => {} } }, $, directory: process.env.BRAIN_TEST_DIR,
-});
+await plugin.setup(ctx);
 // Assistant text only: role filter drops it as a question, so the hook degrades
 // to the project panorama — never a "token"-driven search.
-await hooks["chat.message"](
-  { sessionID: "ses_1" },
+await registered.get("prompt")(
   { message: { role: "assistant" }, parts: [{ type: "text", text: "token" }] },
 );
+const system = [{ type: "text", text: "base" }];
+await registered.get("context")({ system });
 console.log("DONE");
 "#;
     std::fs::write(d.join("harness.js"), harness).expect("harness");
@@ -1691,6 +1720,7 @@ console.log("DONE");
         .arg(d.join("harness.js"))
         .current_dir(&d)
         .env("BRAIN_TEST_DIR", w.root.join("hive").to_string_lossy().to_string())
+        .env("BRAIN_BIN", bin())
         .env("BRAIN_DB_PATH", w.db())
         .env("XDG_RUNTIME_DIR", w.env())
         .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)

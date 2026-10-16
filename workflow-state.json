@@ -1,25 +1,18 @@
 {
   "project": "brain",
-  "version": "0.10.0",
-  "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B)",
-  "current_feature": "brain-specialist",
+  "version": "0.11.1",
+  "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B) | ultimo ciclo: migracao OpenCode V1->V2 (plugins/mcp/instalador)",
+  "current_feature": "opencode-v2-migration",
   "current_phase": "archived",
   "previous_phase": "verify",
   "next_phase": "done",
-  "type": "feature",
+  "type": "refactor",
   "artifacts": {
-    "exploration": ".spec/brain-specialist/EXPLORATION.md",
-    "constraints": ".spec/brain-specialist/CONSTRAINTS.md",
-    "design-decisions": ".spec/brain-specialist/DESIGN-DECISIONS.md",
-    "architecture": ".spec/brain-specialist/ARCHITECTURE.md",
-    "plan": ".spec/brain-specialist/PLAN.md",
-    "validation": "validated 2026-10-14: 5 files, 6 ADRs, 16 tasks, cross-refs ok; assumption markers resolved DO-03 (0 hits, see DO-03-HANDOFF.md)",
-    "proposal": ".spec/brain-specialist/PROPOSAL.md",
-    "spec": ".spec/brain-specialist/SPEC.md",
-    "sdd_plan": ".spec/brain-specialist/PLAN.md",
-    "tasks": ".spec/archive/20261014-brain-specialist/TASKS.md",
-    "verify": ".spec/archive/20261014-brain-specialist/VERIFY.md",
-    "archive": ".spec/archive/20261014-brain-specialist/"
+    "exploration": ".spec/archive/20261015-opencode-v2-migration/PROPOSAL.md",
+    "spec": ".spec/archive/20261015-opencode-v2-migration/trace.md",
+    "tasks": ".spec/archive/20261015-opencode-v2-migration/tasks.md",
+    "verify": ".spec/archive/20261015-opencode-v2-migration/VERIFY.md",
+    "archive": ".spec/archive/20261015-opencode-v2-migration/"
   },
   "features": [
     {
@@ -79,6 +72,11 @@
     },
     {
       "name": "brain-specialist",
+      "phase": "archived",
+      "progress": 100
+    },
+    {
+      "name": "opencode-v2-migration",
       "phase": "archived",
       "progress": 100
     }
@@ -218,20 +216,32 @@
     "BOOKKEEPING: bump 0.9.0 -> 0.9.1",
     "HELP-01: brain --help agrupado em 5 categorias com titulo, 21 one-liners PT (73 col), long_about, rodape Exemplos; renderer do help raiz (next_help_heading nao agrupa subcomandos no clap 4.6.6); redact_url no env impresso; 13 testes em help_overview.rs, 7 mutacoes; suite 326->342",
     "P2-CHUNK-CAP: MAX_CHUNK_BYTES=4096 + split_oversize em brain-core (subdivisão, nunca truncar); reindex null=0 coverage 100%; 6 testes brain-core com mutação 6 falhas; suite 488->494",
-    "BRAIN-SPECIALIST: skill roteiro deepsearch + 3 hooks kiro + steering + plugin opencode (3 eventos verificados) + setup kiro/opencode + doctor D1-D6 + brain-hook.sh sem uv-run + docs matriz IDE; 20/20 tasks, VERIFY 3/3 APPROVED traceability 100%, suite 516/0 + clippy 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; minor bump 0.9.1->0.10.0"
+    "BRAIN-SPECIALIST: skill roteiro deepsearch + 3 hooks kiro + steering + plugin opencode (3 eventos verificados) + setup kiro/opencode + doctor D1-D6 + brain-hook.sh sem uv-run + docs matriz IDE; 20/20 tasks, VERIFY 3/3 APPROVED traceability 100%, suite 516/0 + clippy 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; minor bump 0.9.1->0.10.0",
+    "OC-V2-T1: opencode.json V2-only nativo (plugin->plugins, permission.task ask->permissions[{action:subagent,resource:*,effect:ask}], agent->agents com prompt->system, tools{write,edit,bash}->permissions[{edit},{shell}], instructions preservado)",
+    "OC-V2-T2: .opencode/plugins/{harness-validator,hitl-guardrail}.js V2 via Plugin.define({id,setup}) + @opencode/plugin 2.0.29; ctx.tool.hook('execute.before') bloqueia Maven (verificado) e libera cargo; hitl-guardrail via ctx.permission.hook('evaluate') default-allow fail-open",
+    "OC-V2-T3: hooks/opencode/brain-session.js V2 — ctx.session.hook('prompt'|'context'|'compaction'), execFile argv-array sem shell, BRAIN_BIN lazy brainBin(), fail-open done('') sem rethrow, once-per-session, userQuestion so role=user (SEGREDO-DO-MODELO nao vaza), MAX_APPEND_CHARS=4000; teste reancorado V2 (remocao do scan do binario 1.18.31) node --test 11/11",
+    "OC-V2-T4: .opencode/package.json @opencode-ai/plugin 1.18.30 -> @opencode/plugin 2.0.29 + type:module; CONFIGURE_MCP.md secao 1 V2 (mcp.servers, binario Rust, tabela 17 tools rmcp); README.md + hooks/README.md atualizados",
+    "OC-V2-C1: setup.rs panico real em brain setup opencode — OPENCODE_VERIFIED_EVENTS/OPENCODE_DEAD_EVENTS/plugin_hook_keys removidos; OPENCODE_V2_SESSION_HOOKS=['compaction','context','prompt'] + plugin_session_hooks() extrai session.hook('...') (aspas duplas/simples); stale_constant/stale_env_fallback leem brainBin() com fallback legado",
+    "OC-V2-C2: merge_project_json/merge_mcp_json migrados — servers_mut grava mcp.servers; brain_remote_entry={type:remote,url,disabled:false,timeout:{catalog,execution}}; V1 (mcpServers) nunca escrito, pre-existente preservado",
+    "OC-V2-P2/P3: doctor D3 valida shape V2 (Plugin.define + 3 session.hook + argv hook/--event); fixtures migradas; AGENTS.md secao 3 MCP em schema V2",
+    "OC-V2-HARNESS: 7/7 gates — cargo test --workspace 516/0, clippy --all-targets -D warnings 0, node --test 11/11, opencode v2.0.29 carrega sem warnings com IDs estaveis, brain ping pong, brain setup opencode --yes em tmp exit 0 com schema V2 mcp.servers, grep residual V1 zero em codigo produtivo",
+    "MCP-HTTP-01: transporte MCP Streamable HTTP em POST /mcp (rmcp transport-streamable-http-server), irmão do SSE legado em /sse — StreamableHttpService aninhado no router de producao (SseServer + nest_service) e no router de debug; mesma fila de embedding por sessao; 4 testes de integracao em tests/streamable_http.rs (handshake real initialize->initialized->tools/list->tools/call ping, GET sem sessao 401 sem derrubar, /sse ainda emite event: endpoint, shims /mcp/<tool> não sombreados); setup::mcp_url emite /mcp e asserts ajustados; CONFIGURE_MCP.md/README/AGENTS/BRAIN.MCP.md/SKILL com a URL correta + nota do 405; suite 516->520, clippy 0; bump minor 0.10.0->0.11.0",
+    "MCP-HTTP-01: transporte Streamable HTTP POST /mcp no brain-mcp (feature rmcp transport-streamable-http-server + axum08/tokio-util, StreamableHttpService::new + LocalSessionManager aninhado em nest_service, SSE legado /sse intacto); 4 testes streamable_http com cliente HTTP cru; setup.rs emitindo url .../mcp; CONFIGURE_MCP.md/README/AGENTS/BRAIN.MCP/SKILL atualizados; minor bump 0.10.0->0.11.0",
+    "MCP-DEPLOY-2026-10-15: cargo build --release + restart brain-mcp.service (PID 3299906, binario release novo) apos matar orfao 2843306 que segurava a porta 8321 e deixava o systemd em 'activating'; handshake real em 8321 /mcp (initialize ok, tools/call ping pong) + /sse legado emitindo event:endpoint; config global ~/.config/opencode/opencode.json apontado para http://127.0.0.1:8321/mcp com mcp.servers V2; opencode mcp list => '✓ brain connected'; sessao funcional validou ping pong, brain_search 3 hits, brain_status 949 notas cobertura 100%",
+    "TD-016: LockWait por chamador em config.rs (hook 25x10ms+Skip inalterado; setup interactive 500x10ms=5s+Fail) - fix do skip silencioso que perdia a decisao do operador; +1 unit (policy) e +1 e2e (lockheld 1,5s) com mutacao reproduzindo o comportamento antigo; suite 508->510, 10/10 workspace verdes"
   ],
-  "test_count": 516,
-  "test_pass": 516,
+  "test_count": 510,
+  "test_pass": 508,
   "code_review": {
-    "last_invoked_at": "2026-10-14T00:00:00Z",
+    "last_invoked_at": "2026-10-15T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
     "attention_issues": 1,
-    "reviewer_notes": "Bloco 1+2 APPROVED zero red; 1 yellow (disclose_context unconfirmed -> rewritten DO-01, resolved DO-03)"
+    "reviewer_notes": "Batch 1 CHANGES_REQUIRED (2 criticos: C1 panico setup.rs:359 em runtime; C2 instalador emitia mcpServers V1 vs docs V2) -> batch 2 Rust corrigiu -> re-review APPROVED 0 criticos; P1 fechado. Atencao: falso positivo do harness-validator (regex casa token em prosa via JSON.stringify fallback) — evidencia ao vivo, ver TD-014"
   },
   "harness_status": "passed",
-  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto | 2026-10-12: chunk-cap P2 — cargo test 494/0 + clippy --all-targets 0 + pytest 124/2-legadas + reindex null=0 coverage 100% (dead_lettered RAM=3 limpa no próximo restart) | 2026-10-14: VERIFY brain-specialist — cargo test 516/0 (2 runs) + clippy --all-targets 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; traceability 100% (26/26)",
-  "last_updated": "2026-10-14",
+  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto | 2026-10-12: chunk-cap P2 — cargo test 494/0 + clippy --all-targets 0 + pytest 124/2-legadas + reindex null=0 coverage 100% (dead_lettered RAM=3 limpa no próximo restart) | 2026-10-14: VERIFY brain-specialist — cargo test 516/0 (2 runs) + clippy --all-targets 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; traceability 100% (26/26) | 2026-10-15: migracao OpenCode V1->V2 (opencode v2.0.29) — cargo test --workspace 516/0 + clippy -D warnings 0 + node --test 11/11 + brain ping pong + brain setup opencode --yes em tmp exit 0 com schema V2 mcp.servers; VERIFY 3/3 APPROVED, traceability 6/6 | 2026-10-15 (deploy MCP): handshake MCP real em 8321 /mcp (initialize + tools/call ping pong), /sse legado intacto (event:endpoint), opencode mcp list '✓ brain connected', sessao funcional com brain_search (949 notas, embedding 100%)",
+  "last_updated": "2026-10-15",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -391,13 +401,57 @@
       "severity": "P2",
       "phase": "resolved",
       "status": "FECHADO 2026-10-12. MAX_CHUNK_BYTES=4096 (medido: 6000 OK, 6200-6800 falha conforme conteúdo, margem 1.5x) + subdivisão por \\n com hard-cut UTF-8 (nunca truncar) em brain-core; vale nos 3 paths via chunk_text único. reindex --all: null=0, without_embedding=0, coverage 100%. 6 testes novos (brain-core 10->16); mutação sem cap → 6 falhas. cargo test 494/0 + clippy 0 + pytest 124/2-legadas. Contador dead_lettered=3 em RAM do servidor limpa no próximo restart (sem restart nesta task por proibição)"
+    },
+    {
+      "id": "TD-014",
+      "issues": [
+        "harness-validator falso positivo em prosa: commandText() sempre aplica JSON.stringify(event.input) e o regex casa o token Maven isolado em qualquer campo, inclusive texto descritivo. Evidencia ao vivo: um script python de governanca que apenas MENCIONAVA a palavra foi bloqueado (2026-10-15)",
+        "Classe pre-existente na V1 (ctx.command.includes) com superficie maior no fallback de serializacao"
+      ],
+      "severity": "P2",
+      "phase": "open",
+      "status": "Aberto 2026-10-15. Correcao proposta: inspecionar so argv (input.command/args array, argv[0] com basename) em vez do input serializado, e ancorar regex no inicio do comando (^\\s*(sudo\\s+)?(\\./)?token\\b). Aguardando decisao do usuario no portao P6->fim: corrigir agora (re-delegar developer-engineer) ou manter como divida"
+    },
+    {
+      "id": "TD-013",
+      "issues": [
+        "OC-V2 cosmeticos: stale_env_fallback/stale_constant parseiam '\"' naive (valor exibido trunca em path com escape; veredito correto)",
+        "OC-V2 cosmetico: doctor D3 sem plugin_code_only antes do contains",
+        "OC-V2 gap de teste: harness-validator/hitl-guardrail sem teste unitario proprio",
+        "OC-V2 gap de teste: MAX_APPEND_CHARS clip e userQuestion(prompt:string) nao exercitados",
+        "~/.config/opencode/* (global: mcp.json + plugins caveman/toon) ainda V1 — fora do escopo aprovado"
+      ],
+      "severity": "P3",
+      "phase": "open",
+      "status": "Aceito pos-VERIFY 2026-10-15 (todos nao bloqueantes, documentados em .spec/archive/20261015-opencode-v2-migration/) | 2026-10-15: brain_store executado (sessao + estudo opencode/v2-migracao-mcp-armadilhas + 2 regras em regras/global)"
+    },
+    {
+      "id": "TD-015",
+      "issues": [
+        "Gate de harness validou SHAPE do JSON do instalador em vez de CONECTIVIDADE MCP: 'brain setup opencode --yes exit 0 com schema V2 mcp.servers' passou enquanto o brain MCP estava inutilizavel para o opencode (405 no /sse + stub stdio falso). Bug so apareceu quando o usuario testou",
+        "Registrado apos correcao MCP-HTTP-01 + deploy"
+      ],
+      "severity": "P2",
+      "phase": "open",
+      "status": "Aberto 2026-10-15. Correcao de processo: gate de aceite de MCP passa a ser 'opencode mcp list => <server> connected' + handshake JSON-RPC real (initialize -> notifications/initialized -> tools/list -> tools/call), nunca 'JSON valido'. Aplicar em futuras migracoes de cliente MCP"
+    },
+    {
+      "id": "TD-016",
+      "issues": [
+        "Flake pre-existente: two_concurrent_setups_do_not_lose_each_others_decisions (crates/brain-cli/tests/setup_interactive.rs:601) e 3 testes de embed_queue falham intermitentemente (~15% das runs) SOB CARGA TOTAL da suite. Isolados passam 6/6 e 10/10",
+        "Evidencia de nao-regressao: o teste existe em HEAD, NAO aparece no git diff da migracao, e o lock/rename de setup.rs nao foi tocado (git diff sem lock/flock/rename adicionados)",
+        "Assercao observada: presentes=[proj0,1,2,4,5,6,7] vs esperado=[proj0..7] — proj3 perdeu a escrita sob contecao"
+      ],
+      "severity": "P1",
+      "phase": "open",
+      "status": "Aberto 2026-10-15. Classificado P1 porque zera a confiabilidade do gate H1 (harness-continuous exige 0 falhas, e uma falha intermitente torna o gate nao-deterministico). NAO corrigido nesta sessao: fora do escopo aprovado (migracao + MCP) e a causa raiz (lock/backoff sob carga, ou teste sensivel a tempo) exige investigacao propria. Proxima task: rodar apenas brain-cli + embed_queue em loop para achar o limiar, e/ou aumentar robustez do lock"
     }
   ],
   "test_breakdown": {
-    "rust_workspace": 494,
+    "rust_workspace": 508,
     "python_src_tests": 124,
     "python_legacy_integration_failing": 2,
-    "total": 616
+    "total": 632
   },
   "production": {
     "deployed_at": "2026-10-08",
@@ -405,12 +459,12 @@
       "brain-mcp.service:8321",
       "brain-viewer.service:8322"
     ],
-    "pids": "1299535/1299534",
-    "notes": 507,
+    "pids": "3299906 (brain-mcp 8321 release 0.11.0)",
+    "notes": 949,
     "chunks": 1981,
     "embedding_coverage_pct": 99.85,
     "head": "c3371a7",
-    "version": "0.9.1"
+    "version": "0.11.0"
   },
   "security": {
     "redaction_sinks": [
@@ -454,8 +508,17 @@
     "gate": "pass"
   },
   "delegation": {
-    "block": "5",
+    "block": "6",
     "status": "completed",
-    "resume": "blocos 1-5 entregues e verificados (VERIFY 3/3 APPROVED 2026-10-14); archive 20261014-brain-specialist"
+    "resume": "blocos 1-3 entregues e verificados: batch 1 JS/config/docs (developer ses_ebf397c3 + review ses_ebf31842 CHANGES_REQUIRED 2 criticos), batch 2 Rust setup/doctor (developer ses_ebf2edc4 + re-review ses_ebf2411e APPROVED), batch 3 harness qa-engineer ses_ebf1d420 7/7 PASS; VERIFY 3/3 APPROVED 2026-10-15; archive 20261015-opencode-v2-migration; commit pendente de portao P6->fim"
+  },
+  "feature_status": {
+    "current": {
+      "name": "opencode-v2-migration",
+      "stage": "archived",
+      "progress": 100
+    },
+    "completed": 13,
+    "total": 13
   }
 }

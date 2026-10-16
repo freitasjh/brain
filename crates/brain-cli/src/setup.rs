@@ -36,12 +36,26 @@ pub struct SetupOpts {
 /// The env var equivalent of `--yes`, for a CI job that cannot add flags.
 pub const NONINTERACTIVE_ENV: &str = "BRAIN_SETUP_NONINTERACTIVE";
 
+/// The MCP URL an installer writes into a client config.
+///
+/// `/mcp`, not `/sse`. opencode V2 (`type: "remote"`) speaks MCP Streamable HTTP,
+/// which is **POST-only**: it opens the session with `POST /mcp` and keeps the
+/// session id from the response header. Pointed at `/sse` — the legacy SSE
+/// transport — it was measured failing with `Error POSTing to endpoint (HTTP 405)`,
+/// because that route is a `GET` that opens a long-lived stream and takes its
+/// replies on a separate `POST /message`. An installer that wrote `/sse` therefore
+/// wrote a URL that cannot connect, which is the whole defect this shape avoids.
 pub fn mcp_url(port: u16) -> String {
-    format!("http://localhost:{}/sse", port)
+    format!("http://localhost:{}/mcp", port)
 }
 
-/// Merge `mcpServers.brain` into an existing JSON doc (or fresh `{}` when
-/// unparseable, e.g. jsonc with comments). Other keys are preserved.
+/// Merge `mcp.servers.brain` (OpenCode V2 nativo) into an existing JSON doc (or
+/// fresh `{}` when unparseable, e.g. jsonc with comments). Other keys are preserved.
+///
+/// V2 shape (cf. CONFIGURE_MCP.md §1, https://opencode.ai/v2/docs/migrate-v1/):
+/// `mcp.servers.brain = {type:"remote", url, disabled:false,
+/// timeout:{catalog,execution}}`. The V1 `mcpServers` key is legacy and is
+/// never written by new installs (a pre-existing one is left untouched).
 pub fn merge_mcp_json(existing: Option<&str>, url: &str) -> String {
     let mut v: serde_json::Value = match existing
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
@@ -51,7 +65,7 @@ pub fn merge_mcp_json(existing: Option<&str>, url: &str) -> String {
     };
     servers_mut(&mut v).insert(
         "brain".to_string(),
-        serde_json::json!({"transport": "sse", "url": url}),
+        brain_remote_entry(url),
     );
     // F-01: `to_string_pretty` on a `json!`-built `Value` cannot fail in
     // practice, but an `unwrap` turns even the impossible into a panic path.
@@ -59,9 +73,23 @@ pub fn merge_mcp_json(existing: Option<&str>, url: &str) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
 
+fn brain_remote_entry(url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "remote",
+        "url": url,
+        "disabled": false,
+        "timeout": {"catalog": 30000, "execution": 30000}
+    })
+}
+
 fn servers_mut(v: &mut serde_json::Value) -> &mut serde_json::Map<String, serde_json::Value> {
     let m = v.as_object_mut().unwrap();
-    let e = m.entry("mcpServers").or_insert(serde_json::json!({}));
+    let mcp = m.entry("mcp").or_insert(serde_json::json!({}));
+    if !mcp.is_object() {
+        *mcp = serde_json::json!({});
+    }
+    let mcp_obj = mcp.as_object_mut().unwrap();
+    let e = mcp_obj.entry("servers").or_insert(serde_json::json!({}));
     if !e.is_object() {
         *e = serde_json::json!({});
     }
@@ -78,7 +106,7 @@ pub fn merge_project_json(existing: Option<&str>, brain_rel: &str, url: &str) ->
     };
     servers_mut(&mut v).insert(
         "brain".to_string(),
-        serde_json::json!({"transport": "sse", "url": url}),
+        brain_remote_entry(url),
     );
     let entries = [
         format!("{}/.agents/skills/brain/SKILL.md", brain_rel),
@@ -242,31 +270,21 @@ fn shell_target(home: &Path, db: &str, force: bool, dry_run: bool) -> Result<()>
     Ok(())
 }
 
-/// SU-01b (Bloco 4, OC-01/OC-02) — lista fechada de eventos opencode.
+/// SU-01b (Bloco 4, OC-01) — lista fechada de hooks de sessão opencode V2.
 ///
-/// Os 3 hooks com call site `trigger("...")` no runtime instalado (opencode
-/// 1.18.31); a extração está ancorada em `hooks/opencode/brain-session.test.mjs`.
-/// I3: o instalado só assina o que está aqui. **Ordem alfabética de propósito:**
-/// `plugin_hook_keys` devolve ordenado e o `assert` em `opencode_plugin_js`
-/// compara sequência.
-pub const OPENCODE_VERIFIED_EVENTS: &[&str] = &[
-    "chat.message",
-    "experimental.chat.system.transform",
-    "experimental.session.compacting",
-];
-
-/// Mortos conhecidos em 1.18.31: sem call site, hook silenciosamente morto.
-/// Espelha `KNOWN_DEAD` de `hooks/opencode/brain-session.test.mjs` — as duas
-/// listas devem mudar juntas.
-pub const OPENCODE_DEAD_EVENTS: &[&str] = &[
-    "session.created",
-    "session.idle",
-    "message.updated",
-    "message.part.updated",
-    "permission.ask",
-    "event",
-    "config",
-];
+/// O plugin V2 nativo (`@opencode/plugin`) registra via
+/// `ctx.session.hook("prompt"|"context"|"compaction")` — os destinos oficiais
+/// de `chat.message`, `experimental.chat.system.transform` e
+/// `experimental.session.compacting`
+/// (cf. https://opencode.ai/v2/docs/build/plugins/migrate-v1/).
+/// **Ordem alfabética de propósito:** `plugin_session_hooks` devolve ordenado
+/// e o `assert` em `opencode_plugin_js` compara sequência.
+///
+/// Legado V1 removido: `OPENCODE_VERIFIED_EVENTS` (`chat.message`, …),
+/// `OPENCODE_DEAD_EVENTS` e `plugin_hook_keys` (chaves `"nome":` de primeiro
+/// nível) morreram com o formato V1 — o JS V2 não tem nenhuma chave de
+/// primeiro nível, então o assert antigo pânicava em todo install real.
+pub const OPENCODE_V2_SESSION_HOOKS: &[&str] = &["compaction", "context", "prompt"];
 
 /// SU-01b — o plugin opencode instalado (Bloco 4, OC-01/OC-02).
 ///
@@ -281,30 +299,30 @@ pub const OPENCODE_DEAD_EVENTS: &[&str] = &[
 /// `BRAIN_BIN` é o que faz o hook chamar o binário certo mesmo sem `brain` no
 /// `PATH`. `BRAIN_BIN` no ambiente continua vencendo (sem hardcoded surpresa).
 ///
-/// Eventos (reality-check no binário instalado opencode 1.18.31 — ver o
-/// cabeçalho do fonte e `.spec/brain-specialist/OC-02-DECISION.md`): o runtime
-/// despacha por UM ponto, `Plugin.trigger(name, ...)`, e nome sem call site
-/// `trigger("...")` NUNCA executa. O gerador anterior assinava
-/// `session.created/session.idle/message.updated/message.part.updated` —
-/// eventos internos do barramento sem trigger, plugin silenciosamente morto.
-/// O instalado assina só [`OPENCODE_VERIFIED_EVENTS`]; os
-/// [`OPENCODE_DEAD_EVENTS`] são negados por teste (classe code_only, como o
-/// `brain-session.test.mjs` T3).
+/// Eventos (V2 nativo, cf. cabeçalho da fonte e
+/// `hooks/opencode/brain-session.test.mjs`): o runtime registra via
+/// `ctx.session.hook("prompt"|"context"|"compaction")`. O instalado assina só
+/// [`OPENCODE_V2_SESSION_HOOKS`]; chaves V1 (`"chat.message"`,
+/// `experimental.*`, `export const Plugin`, `tool.execute.before`,
+/// `from "@opencode-ai/plugin"`) são negadas por teste (classe code_only,
+/// como o `brain-session.test.mjs` T3).
 ///
 /// O que continua valendo do gerador anterior (e continua testado):
 /// - sem `--db` (o valor congelaria o ambiente; `brain hook` já lê
 ///   `BRAIN_DB_PATH` e cai em `./data/brain.db` relativo ao cwd);
-/// - `directory` como cwd do filho, nunca como `--project` (path absoluto é
-///   recusado com `Absolute paths not allowed`);
+/// - `directory` como cwd do filho via `execFile(..., {cwd: directory})`,
+///   nunca como `--project` (path absoluto é recusado com
+///   `Absolute paths not allowed`);
 /// - `--payload` com id único por invocação (`Date.now()` + contador), senão
 ///   o dedup do hook registra 1 sessão por projeto por login;
-/// - fail-open total (`.nothrow()`, catch sem rethrow): hook que falha não
-///   derruba a sessão; payload sem segredo.
+/// - fail-open total (`execFile` + `done("")` sem rethrow, catch sem rethrow):
+///   hook que falha não derruba a sessão; payload sem segredo.
 pub const OPENCODE_STATIC_PLUGIN: &str =
     include_str!("../../../hooks/opencode/brain-session.js");
 
-/// O fallback de `BRAIN_BIN` no template: `process.env.BRAIN_BIN || "brain"`.
-/// A substituição troca só o literal `"brain"` pelo `exe` real; com
+/// O fallback de `BRAIN_BIN` no template: `process.env.BRAIN_BIN || "brain"`,
+/// lido de forma lazy pela função `brainBin()` (sem `const BRAIN_BIN =`,
+/// sem `$`). A substituição troca só o literal `"brain"` pelo `exe` real; com
 /// `exe == "brain"` a saída é byte-fiel à fonte.
 const OPENCODE_BIN_FALLBACK_NEEDLE: &str = r#"process.env.BRAIN_BIN || "brain""#;
 
@@ -324,19 +342,25 @@ pub fn plugin_code_only(js: &str) -> String {
     out
 }
 
-/// Chaves de hook de primeiro nível (`"nome":` no início da linha),
-/// ordenadas e sem duplicata.
-pub fn plugin_hook_keys(js: &str) -> Vec<String> {
+/// Nomes registrados via `session.hook("nome", …)` / `ctx.session.hook('nome', …)`,
+/// ordenados e sem duplicata. Mesma extração do teste
+/// `setup registra prompt + context + compaction` de
+/// `hooks/opencode/brain-session.test.mjs` (mock de `ctx.session.hook`).
+pub fn plugin_session_hooks(js: &str) -> Vec<String> {
     let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for line in plugin_code_only(js).lines() {
-        let Some(rest) = line.trim_start().strip_prefix('"') else {
+    let code = plugin_code_only(js);
+    let mut rest = code.as_str();
+    while let Some(i) = rest.find("session.hook(") {
+        rest = &rest[i + "session.hook(".len()..];
+        let t = rest.trim_start();
+        let quote = t.chars().next();
+        if quote != Some('"') && quote != Some('\'') {
             continue;
-        };
-        let Some(end) = rest.find('"') else {
-            continue;
-        };
-        if rest[end + 1..].trim_start().starts_with(':') {
-            keys.insert(rest[..end].to_string());
+        }
+        let q = quote.unwrap();
+        let after = &t[1..];
+        if let Some(end) = after.find(q) {
+            keys.insert(after[..end].to_string());
         }
     }
     keys.into_iter().collect()
@@ -351,15 +375,13 @@ pub fn opencode_plugin_js(exe: &str) -> String {
         1,
     );
     // I3 fail-loud: se o template ganhar/perder um hook sem atualizar a lista
-    // fechada, o instalador recusa em vez de embarcar evento morto (ou deixar
-    // um verificado de fora). Custo de um scan de 8 KiB por install. A igualdade
-    // já implica a negação, mas a denylist nomeia o modo de falha no assert.
-    let owned = plugin_hook_keys(&out);
+    // fechada, o instalador recusa em vez de embarcar hook morto (ou deixar
+    // um verificado de fora). Custo de um scan de ~8 KiB por install.
+    let owned = plugin_session_hooks(&out);
     let keys: Vec<&str> = owned.iter().map(String::as_str).collect();
     assert!(
-        keys == OPENCODE_VERIFIED_EVENTS
-            && !keys.iter().any(|k| OPENCODE_DEAD_EVENTS.contains(k)),
-        "opencode plugin fora da lista fechada: atualize OPENCODE_VERIFIED_EVENTS/OPENCODE_DEAD_EVENTS junto com hooks/opencode/brain-session.js"
+        keys == OPENCODE_V2_SESSION_HOOKS,
+        "opencode plugin fora da lista fechada: atualize OPENCODE_V2_SESSION_HOOKS junto com hooks/opencode/brain-session.js"
     );
     out
 }
@@ -410,16 +432,34 @@ fn opencode_plugin_target(home: &Path, exe: &str, force: bool, dry_run: bool) ->
 
 /// The value an existing plugin has for `BRAIN_BIN`, if it has one.
 ///
-/// Two shapes: pré-SU-01b (`const BRAIN_BIN = "/abs/brain";`) e SU-01b
-/// (`const BRAIN_BIN = process.env.BRAIN_BIN || "/abs/brain";`, env com
-/// fallback). Pega o último literal `"..."` da linha, que é o fallback nos
-/// dois casos — então um plugin antigo ainda é legível no upgrade.
+/// V2 (`function brainBin() { return process.env.BRAIN_BIN || "<exe>"; }`,
+/// env com fallback lazy): pega o último literal `"..."` após o `||`, que é
+/// o fallback. Formas pré-V2 (`const BRAIN_BIN = "/abs/brain";` e
+/// `const BRAIN_BIN = process.env.BRAIN_BIN || "/abs/brain";`) continuam
+/// legíveis no upgrade via fallback legado.
 fn stale_constant(path: &Path, label: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
+    if let Some(found) = stale_env_fallback(&text, label) {
+        return Some(found);
+    }
+    // Legado pré-V2: `const LABEL = ... || "fallback";`.
     let start = text.find(&format!("const {label} ="))?;
     let line = text[start..].lines().next()?;
     let rhs = line.split_once('=')?.1;
     let rhs = rhs.rsplit("||").next().unwrap_or(rhs);
+    let s = rhs.find('"')?;
+    let e = s + 1 + rhs[s + 1..].find('"')?;
+    Some(rhs[s + 1..e].to_string())
+}
+
+/// Extrai o fallback de `process.env.LABEL || "<valor>"` (forma V2, dentro de
+/// `brainBin()`). Devolve o último literal após o `||` na linha.
+fn stale_env_fallback(text: &str, label: &str) -> Option<String> {
+    let needle = format!("process.env.{label}");
+    let i = text.find(&needle)?;
+    let after = &text[i + needle.len()..];
+    let line = after.lines().next()?;
+    let rhs = line.split_once("||")?.1;
     let s = rhs.find('"')?;
     let e = s + 1 + rhs[s + 1..].find('"')?;
     Some(rhs[s + 1..e].to_string())
@@ -1246,7 +1286,7 @@ pub fn run_setup(o: &SetupOpts) -> Result<()> {
                 dir.display()
             );
         } else {
-            match crate::config::save_entry(&dir, entry) {
+            match crate::config::save_entry_interactive(&dir, entry) {
                 Ok(()) => println!(
                     "setup: recorded {} for {}",
                     entry.projeto.as_deref().unwrap_or("(none, recusado)"),
@@ -1274,26 +1314,33 @@ mod tests {
 
     #[test]
     fn merge_mcp_fresh_and_preserve() {
-        let out = merge_mcp_json(None, "http://localhost:8321/sse");
+        let out = merge_mcp_json(None, "http://localhost:8321/mcp");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+        assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+        assert_eq!(v["mcp"]["servers"]["brain"]["type"], "remote");
+        assert_eq!(v["mcp"]["servers"]["brain"]["disabled"], false);
+        assert!(v["mcp"]["servers"]["brain"]["timeout"].is_object());
         // existing other servers preserved
-        let out = merge_mcp_json(Some(r#"{"mcpServers":{"other":{"url":"x"}},"other":1}"#), "http://localhost:8321/sse");
+        let out = merge_mcp_json(Some(r#"{"mcp":{"servers":{"other":{"url":"x"}}},"other":1}"#), "http://localhost:8321/mcp");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["mcpServers"]["other"]["url"], "x");
+        assert_eq!(v["mcp"]["servers"]["other"]["url"], "x");
         assert_eq!(v["other"], 1);
         // jsonc with comments -> fresh doc, brain present
-        let out = merge_mcp_json(Some("// comment\n{bad"), "http://localhost:8321/sse");
+        let out = merge_mcp_json(Some("// comment\n{bad"), "http://localhost:8321/mcp");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(v["mcpServers"]["brain"].is_object());
+        assert!(v["mcp"]["servers"]["brain"].is_object());
+        // legacy V1 key is never written by new installs
+        assert!(v.get("mcpServers").is_none(), "V1 mcpServers must not be written: {v}");
     }
 
     #[test]
     fn merge_project_adds_instructions_once() {
-        let out = merge_project_json(None, "../brain", "http://localhost:8321/sse");
+        let out = merge_project_json(None, "../brain", "http://localhost:8321/mcp");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["instructions"].as_array().unwrap().len(), 2);
-        let out2 = merge_project_json(Some(&out), "../brain", "http://localhost:8321/sse");
+        assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+        assert_eq!(v["mcp"]["servers"]["brain"]["type"], "remote");
+        let out2 = merge_project_json(Some(&out), "../brain", "http://localhost:8321/mcp");
         let v2: serde_json::Value = serde_json::from_str(&out2).unwrap();
         assert_eq!(v2["instructions"].as_array().unwrap().len(), 2);
     }
@@ -1703,23 +1750,37 @@ mod opencode_plugin {
         super::plugin_code_only(js)
     }
 
-    /// SU-01b: forma verificada — o export `Plugin`, os args, e exatamente os 3
-    /// eventos com call site no runtime instalado (1.18.31). O teste antigo
-    /// afirmava `session.created`/`session.idle` a partir da doc — eventos sem
-    /// trigger, plugin silenciosamente morto (Bloco 4).
+    /// SU-01b: forma verificada V2 — `Plugin.define({id, setup})` com hooks via
+    /// `ctx.session.hook("prompt"|"context"|"compaction")` (destinos oficiais
+    /// V1→V2, cf. https://opencode.ai/v2/docs/build/plugins/migrate-v1/).
+    /// Nenhum export V1, nenhuma chave `experimental.*` como hook.
     #[test]
     fn the_plugin_has_the_verified_shape() {
         let js = code_only(&opencode_plugin_js("/usr/bin/brain"));
         for expected in [
-            "export const Plugin = async (",
-            "experimental.chat.system.transform",
-            "chat.message",
-            "experimental.session.compacting",
-            "client",
+            "Plugin.define",
+            "brain-session",
+            "setup",
+            "session.hook",
+            "\"prompt\"",
+            "\"context\"",
+            "\"compaction\"",
+            "execFile",
+            "brainBin",
             "directory",
         ] {
             assert!(js.contains(expected), "the verified shape needs {expected:?}:\n{js}");
         }
+        for gone in [
+            "export const Plugin",
+            "experimental.chat.system.transform",
+            "experimental.session.compacting",
+            "tool.execute.before",
+            "@opencode-ai/plugin",
+        ] {
+            assert!(!js.contains(gone), "V1 residue must be gone, found {gone:?}:\n{js}");
+        }
+        assert!(!js.contains("\"chat.message\""), "V1 key chat.message present:\n{js}");
     }
 
     /// T6.3 / R-08: the artifact calls the Rust binary. `brain-hook.py` is off the
@@ -1732,7 +1793,9 @@ mod opencode_plugin {
         // flags the plugin's own explanation. That has now bitten twice.
         let code = code_only(&opencode_plugin_js("/usr/bin/brain"));
         assert!(code.contains("/usr/bin/brain"), "it must call the binary:\n{code}");
-        assert!(code.contains("hook --event"), "and call the hook:\n{code}");
+        // V2 passa argv separado via execFile: ["hook", "--event", event, ...].
+        assert!(code.contains("\"hook\""), "and call the hook:\n{code}");
+        assert!(code.contains("\"--event\""), "with the event flag:\n{code}");
         // No `--db`: an explicit value beats `BRAIN_DB_PATH`, so the plugin would
         // override the environment. That is the defect that wrote a test session into
         // the production corpus.
@@ -1763,7 +1826,8 @@ mod opencode_plugin {
     fn the_plugin_uses_directory_as_cwd_and_never_as_a_project_name() {
         let js = opencode_plugin_js("/usr/bin/brain");
         let code = code_only(&js);
-        assert!(code.contains(".cwd(directory)"), "the cwd must come from `directory`:\n{code}");
+        assert!(code.contains("execFile"), "V2 uses execFile, no shell:\n{code}");
+        assert!(code.contains("{ cwd: directory") || code.contains("{cwd: directory"), "the cwd must come from `directory` via execFile:\n{code}");
         assert!(
             !code.contains("--project"),
             "`--project` takes a name, not a path — passing `directory` there is refused:\n{code}"
@@ -1776,12 +1840,13 @@ mod opencode_plugin {
     fn the_plugin_catches_its_failures() {
         let code = code_only(&opencode_plugin_js("/usr/bin/brain"));
         assert!(code.contains("} catch"), "the hook runner must catch:\n{code}");
-        assert!(code.contains(".nothrow()"), "and use a non-throwing shell call:\n{code}");
+        assert!(code.contains("execFile"), "and run via execFile (no shell):\n{code}");
+        assert!(code.contains("done(\"\")"), "failure resolves empty, session continues:\n{code}");
         // And the catch must not rethrow.
-        let run = &code[code.find("const runHook").unwrap()..code.find("return {").unwrap()];
-        // " throw" with the leading space, not "throw": `.nothrow()` **contains** the
-        // substring "throw", and a bare substring search flags the very call that makes
-        // the plugin non-throwing. A statement is always preceded by whitespace.
+        let start = code.find("function runHook").expect("runHook");
+        let run = &code[start..];
+        // " throw" with the leading space: a statement is always preceded by
+        // whitespace, and a bare substring search would flag identifiers.
         assert!(
             !run.contains(" throw"),
             "the catch path must not rethrow — a `throw` statement is a hook that can \
@@ -1789,9 +1854,9 @@ mod opencode_plugin {
         );
     }
 
-    /// No credential is embedded: the plugin carries two paths and nothing else. A
-    /// file in a config directory is the last place a secret should sit, and a token
-    /// here would be pasted into a bug report with the plugin.
+    /// No credential is embedded: the plugin carries the binary path and nothing
+    /// else. A file in a config directory is the last place a secret should sit,
+    /// and a token here would be pasted into a bug report with the plugin.
     #[test]
     fn the_plugin_embeds_no_credential() {
         let code = code_only(&opencode_plugin_js("/usr/bin/brain"));
@@ -1801,9 +1866,12 @@ mod opencode_plugin {
                 "the plugin must not embed {forbidden:?}:\n{code}"
             );
         }
-        // One constant, and it is the binary: the machine-scoped path. The database is
-        // the environment's business, so it has no constant here.
-        assert_eq!(code.matches("const BRAIN_").count(), 1, "exactly one constant:\n{code}");
+        // BRAIN_BIN is read lazily via `brainBin()` (env wins, exe frozen as
+        // fallback) — no `const BRAIN_*` at all. The database is the
+        // environment's business, so it has no constant here either.
+        assert!(code.contains("function brainBin()"), "BRAIN_BIN must be lazy via brainBin():\n{code}");
+        assert!(code.contains("process.env.BRAIN_BIN"), "env must win:\n{code}");
+        assert_eq!(code.matches("const BRAIN_").count(), 0, "no frozen const:\n{code}");
     }
 
     /// **The most this can claim.** The documentation defines no schema for a plugin,
@@ -1848,7 +1916,7 @@ mod opencode_plugin {
     fn a_path_with_a_quote_cannot_break_the_literal() {
         let js = opencode_plugin_js("/opt/my \"brain\"/bin");
         assert!(
-            js.contains(r#"const BRAIN_BIN = process.env.BRAIN_BIN || "/opt/my \"brain\"/bin";"#),
+            js.contains(r#"process.env.BRAIN_BIN || "/opt/my \"brain\"/bin""#),
             "{js}"
         );
         let d = std::env::temp_dir().join(format!("brain-oc-q-{}", std::process::id()));
@@ -1870,30 +1938,39 @@ mod opencode_su01b {
     use std::collections::BTreeSet;
 
     fn hook_keys(js: &str) -> BTreeSet<String> {
-        super::plugin_hook_keys(js).into_iter().collect()
+        super::plugin_session_hooks(js).into_iter().collect()
     }
 
     fn code_no_comments(js: &str) -> String {
         super::plugin_code_only(js)
     }
 
-    /// SU-01b BDD(1) eventos: o instalado assina exatamente os 3 verificados.
+    /// SU-01b BDD(1) eventos (V2): o instalado registra exatamente os 3 hooks
+    /// de sessão via `ctx.session.hook`.
     #[test]
     fn instalado_assina_so_os_3_verificados() {
         let keys = hook_keys(&opencode_plugin_js("/usr/bin/brain"));
         let expected: BTreeSet<String> =
-            OPENCODE_VERIFIED_EVENTS.iter().map(|s| s.to_string()).collect();
-        assert_eq!(keys, expected, "instalado deve assinar só verificados");
+            OPENCODE_V2_SESSION_HOOKS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(keys, expected, "instalado deve assinar só os 3 hooks V2");
     }
 
-    /// SU-01b negação (T3 do .mjs): nenhum morto conhecido no código instalado.
+    /// SU-01b negação (T3 do .mjs): nenhuma chave V1 no código instalado.
     #[test]
     fn instalado_nega_os_7_mortos() {
         let code = code_no_comments(&opencode_plugin_js("/usr/bin/brain"));
-        for dead in OPENCODE_DEAD_EVENTS {
+        for dead in [
+            "\"chat.message\"",
+            "chat.message",
+            "experimental.chat.system.transform",
+            "experimental.session.compacting",
+            "export const Plugin",
+            "tool.execute.before",
+            "@opencode-ai/plugin",
+        ] {
             assert!(
-                !code.contains(&format!("\"{dead}\"")),
-                "morto conhecido no instalado: {dead}"
+                !code.contains(dead),
+                "resíduo V1 no instalado: {dead}"
             );
         }
     }
@@ -1947,21 +2024,27 @@ mod opencode_su01b {
     #[test]
     fn merge_limpo_registra_plugin_e_skill_ref() {
         let (home, dir, brain) = scratch("clean");
-        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, false)
+        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/mcp", "/bin/brain", false, false)
             .unwrap();
         let [plugin, mcp, proj] = installed_files(&home, &dir);
         for p in [&plugin, &mcp, &proj] {
             assert!(p.is_file(), "install limpo deve criar {}", p.display());
         }
-        // plugin: só verificados (prova de eventos no instalado real, não no template).
+        // plugin: só os 3 hooks V2 (prova no instalado real, não no template).
         let text = std::fs::read_to_string(&plugin).unwrap();
         let keys = hook_keys(&text);
         let expected: BTreeSet<String> =
-            OPENCODE_VERIFIED_EVENTS.iter().map(|s| s.to_string()).collect();
+            OPENCODE_V2_SESSION_HOOKS.iter().map(|s| s.to_string()).collect();
         assert_eq!(keys, expected);
-        // skill ref: MCP + 2 instructions, sem duplicar estrutura.
+        // MCP global em esquema V2.
+        let mcp_v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
+        assert_eq!(mcp_v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+        assert_eq!(mcp_v["mcp"]["servers"]["brain"]["type"], "remote");
+        // skill ref: MCP V2 + 2 instructions, sem duplicar estrutura.
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&proj).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+        assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+        assert!(v.get("mcpServers").is_none(), "projeto não deve usar V1 mcpServers: {v}");
         let inst = v["instructions"].as_array().expect("instructions");
         assert_eq!(inst.len(), 2, "skill ref (SKILL.md + BRAIN.MCP.md): {inst:?}");
         assert!(inst.iter().all(|e| e.as_str().unwrap().contains(".agents/")));
@@ -1973,7 +2056,7 @@ mod opencode_su01b {
     fn re_run_nao_duplica_nem_regrava() {
         let (home, dir, brain) = scratch("rerun");
         let run = || {
-            install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, false)
+            install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/mcp", "/bin/brain", false, false)
                 .unwrap();
         };
         run();
@@ -2005,7 +2088,7 @@ mod opencode_su01b {
     #[test]
     fn dry_run_zero_writes() {
         let (home, dir, brain) = scratch("dry");
-        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/sse", "/bin/brain", false, true)
+        install_opencode(&home, &dir, Some(&brain), "http://localhost:8321/mcp", "/bin/brain", false, true)
             .unwrap();
         for p in installed_files(&home, &dir) {
             assert!(!p.exists(), "dry-run não deve escrever {}", p.display());
@@ -2022,7 +2105,7 @@ mod opencode_su01b {
     #[test]
     fn sem_brain_dir_instala_plugin_e_mcp_sem_erro() {
         let (home, dir, _brain) = scratch("nobrain");
-        install_opencode(&home, &dir, None, "http://localhost:8321/sse", "/bin/brain", false, false)
+        install_opencode(&home, &dir, None, "http://localhost:8321/mcp", "/bin/brain", false, false)
             .unwrap();
         let [plugin, mcp, proj] = installed_files(&home, &dir);
         assert!(plugin.is_file() && mcp.is_file());
@@ -2197,6 +2280,8 @@ mod review_fixes {
     }
 
     /// Attention 6: a skipped plugin that points somewhere else is reported.
+    /// V2 lê o fallback de `process.env.BRAIN_BIN || "<exe>"` dentro de
+    /// `brainBin()`; formas `const BRAIN_BIN =` pré-V2 continuam legíveis.
     #[test]
     fn a_stale_constant_is_read_out_of_an_existing_plugin() {
         let d = std::env::temp_dir().join(format!("brain-oc-stale-{}", std::process::id()));
@@ -2219,13 +2304,20 @@ mod review_fixes {
         // A file without the constant yields nothing rather than a wrong answer.
         std::fs::write(&f, "// nothing here\n").expect("write");
         assert_eq!(stale_constant(&f, "BRAIN_BIN"), None);
-        // SU-01b shape (env com fallback) lê o fallback, como o instalado real.
+        // Forma V2 (env com fallback em brainBin()) lê o fallback, como o real.
         std::fs::write(
             &f,
-            "const BRAIN_BIN = process.env.BRAIN_BIN || \"/new/brain\";\n",
+            "function brainBin() {\n  return process.env.BRAIN_BIN || \"/new/brain\";\n}\n",
         )
         .expect("write");
         assert_eq!(stale_constant(&f, "BRAIN_BIN").as_deref(), Some("/new/brain"));
+        // Forma legada pré-V2 continua legível no upgrade.
+        std::fs::write(
+            &f,
+            "const BRAIN_BIN = process.env.BRAIN_BIN || \"/legacy/brain\";\n",
+        )
+        .expect("write");
+        assert_eq!(stale_constant(&f, "BRAIN_BIN").as_deref(), Some("/legacy/brain"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

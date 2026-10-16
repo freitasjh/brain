@@ -10,7 +10,7 @@
 | Storage | SQLite-only `data/brain.db` (WAL, FTS5 porter, vec BLOB cosine) dim 768 fixo |
 | Vault | Removido — export temporário `/tmp/brain-export` apenas |
 | Embeddings | Ollama local (`nomic-embed-text`) |
-| Transport | SSE (`BRAIN_PORT=8321` backend, `8322` web) |
+| Transport | **Streamable HTTP** `POST /mcp` (opencode V2) + SSE legado `GET /sse` (`BRAIN_PORT=8321` backend, `8322` web) |
 | Testes | `cargo test` (brain-core) + `cargo build --workspace` |
 | Legado Python | `src/brain_server/` mantido para compat até Fase C, `BRAIN_VAULT_PATH` deprecated |
 
@@ -31,7 +31,7 @@ data/brain.db               → SQLite-only truth (WAL)
 ## Comandos exatos (Rust — fonte da verdade)
 
 ```bash
-cargo test --workspace                 # 213 testes: 10 brain-core, 56 brain-store, 73 brain-mcp (57 lib + 16 fila), 37 brain-embed, 19 CLI e2e, 6 vec_compat, 2 zero_vector_guard, 7 CLI bin, 3 brain-web
+cargo test --workspace                 # 510 testes únicos (521 execuções; o unittest do CLI roda listado 2x): 16 brain-core, 86 brain-store (78 lib + 6 vec_compat + 2 zero_vector_guard), 103 brain-mcp (68 lib + 29 fila + 2 export + 4 streamable_http), 65 brain-embed (37 embed_test + 28 url_redaction), 24 brain-web, 216 brain-cli (96 bin + 120 integração)
 cargo test -p brain-core -- --nocapture
 cargo build --workspace                # debug; release: --release (LTO thin)
 cargo run -p brain-cli -- --db ./data/brain.db status
@@ -69,7 +69,7 @@ uv run brain search "naming" --layer regras --scope projetos
 
 uv run brain reindex --all                           # reindexa tudo
 
-# URL customizada (default http://localhost:8321/sse)
+# URL customizada (default http://localhost:8321/mcp)
 BRAIN_URL=http://localhost:9000 uv run brain ping
 ```
 
@@ -131,7 +131,7 @@ pergunta (IDE não dá tty), então quem responde é o `setup`. Ver `brain setup
 | `brain_project_delete(name)` | Deleta projeto |
 | `brain_migrate(vault?, old_index?)` | Import legado `vault/*.md` → `brain.db` |
 | `brain serve --port` | Viewer axum 8322 `/api/status,search,read,list,graph?project=` |
-| `brain serve-mcp --port 8321` | MCP SSE rmcp 8321 `/sse`, per-request Store + fila de embedding em background, coexist viewer 8322 |
+| `brain serve-mcp --port 8321` | MCP rmcp 8321 — **Streamable HTTP `POST /mcp`** (cliente novo) **e** SSE legado `/sse`+`/message` (cliente antigo), mesmas 17 tools, mesma fila de embedding; coexist viewer 8322 |
 | `brain server start [--port] [--vault] [--old-index]` | **O nome da spec (US-01.1).** Auto-importa o legado (`vault/`) e **arquiva em `vault.bak.tar.gz`** dentro de `BRAIN_EXPORT_ROOT` *antes* de servir; se o archive falhar, o import não roda. Bind e ferramentas idênticos a `serve-mcp`; shutdown idêntico (SIGINT **ou** SIGTERM). `serve`/`serve-mcp` não importam — use `migrate` se não quiser o archive |
 | `brain hook --event session-start\|tool-result\|session-end --project --payload JSON` | Hook Rust spool `XDG_RUNTIME_DIR/brain/hook-spool.jsonl` file lock + Store `sessoes/brain/<date>` |
 
@@ -362,9 +362,9 @@ Projetos que consomem o brain como memória central devem incluir:
    ```json
    { "instructions": ["../brain/.agents/skills/brain/SKILL.md"] }
    ```
-3. **MCP Server** — conectar ao brain via SSE.
+3. **MCP Server** — conectar ao brain via **Streamable HTTP** `/mcp` (OpenCode V2 nativo; `/sse` é o transporte legado, mantido).
    ```json
-   { "mcpServers": { "brain": { "transport": "sse", "url": "http://localhost:8321/sse" } } }
+   { "mcp": { "servers": { "brain": { "type": "remote", "url": "http://localhost:8321/mcp", "disabled": false, "timeout": { "catalog": 30000, "execution": 30000 } } } } }
    ```
 
 O arquivo `.agents/rules/BRAIN.MCP.md` contém a documentação completa

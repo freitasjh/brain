@@ -2,44 +2,13 @@
 // (SU-01b, Bloco 3) — este arquivo é a fonte estática versionada (cf. ADR-1
 // para os agent-hooks kiro: prompts evoluem sem rebuild).
 //
-// ## Eventos: só os verificados no runtime instalado (opencode 1.18.31)
-//
-// O runtime despacha hooks de plugin por UM ponto: `Plugin.trigger(name,...)`
-// que percorre `hooks[name]`. Nome sem call site `trigger("...")` no binário
-// NUNCA executa — hook silencioso morto. Verificado por extração estática em
-// `~/.local/lib/node_modules/opencode-ai/bin/opencode.exe` (16 literais;
-// teste `brain-session.test.mjs` ancora a lista e falha se este arquivo
-// assinar fora dela):
-//
-//   ASSINADOS AQUI (3/16):
-//   - experimental.chat.system.transform — input {sessionID, model},
-//     output {system: string[]}. Ponto de injeção no prompt (append-only).
-//     Dispara antes da chamada ao modelo = observável mais próximo de
-//     "sessão criada" que o runtime oferece.
-//   - chat.message — input {sessionID, agent, model, messageID, variant},
-//     output {message, parts}. Leitura (nunca mutação): de onde sai a
-//     pergunta do usuário para o --question do hook.
-//   - experimental.session.compacting — input {sessionID},
-//     output {context: string[], prompt: string|undefined}. O runtime monta
-//     o prompt de compactação como
-//     `output.prompt ?? [resumoDefault, ...output.context].join("\n\n")`,
-//     então anexar a context ENTRA na compactação; nunca sobrescrever
-//     prompt (apagaria o resumo default).
-//
-//   MORTOS em 1.18.31 (neste arquivo = bug; ver teste T3):
-//   session.created, session.idle, message.updated, message.part.updated
-//   (eventos internos do barramento, sem trigger), `event` e `config`
-//   (documentados, sem call site), permission.ask (só texto de docs).
-//
-// ## Degradados documentados (BDD edge OC-01, sem código morto)
-//
-// - "idle sugere handoff": SEM trigger session.idle no runtime — não há
-//   ponto verificável para fim-de-sessão. O handoff acontece no ponto de
-//   fronteira natural que existe: experimental.session.compacting (cada
-//   compactação registra um checkpoint de handoff). Fim real de sessão
-//   continua via `brain hook --event session-end` manual ou hook kiro Stop.
-// - "compactada sem resumo": se o brain não responder, nada é anexado e o
-//   resumo default do runtime é preservado (append-only garante).
+// V2 native (@opencode/plugin): Plugin.define({id, setup(ctx)}).
+// Mapeamento V1 → V2 (cf. https://opencode.ai/v2/docs/build/plugins/migrate-v1/):
+//   chat.message                        → ctx.session.hook("prompt", ...)
+//   experimental.chat.system.transform  → ctx.session.hook("context", ...) + event.system
+//   experimental.session.compacting     → ctx.session.hook("compaction", ...)
+// O hook V2 recebe UM evento mutável (não input/output separados).
+// event.system em V2 é objeto[] ({type:"text",text}); aceita string[] legado.
 //
 // ## Fail-open (I4)
 //
@@ -47,95 +16,152 @@
 // vazio) resulta em: sem mutação, sem throw, sessão segue. Nenhum segredo no
 // payload — só `{id}` + pergunta como argv separado (aspas sem escape duplo).
 
-const BRAIN_BIN = process.env.BRAIN_BIN || "brain";
+import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
+
+// @opencode/plugin é provido pelo runtime opencode em produção; no teste
+// (node --test direto, sem node_modules em hooks/) cai no shim mínimo.
+const require = createRequire(import.meta.url);
+let Plugin;
+try {
+  ({ Plugin } = require("@opencode/plugin"));
+} catch {
+  Plugin = { define: (def) => def };
+}
+
+function brainBin() {
+  return process.env.BRAIN_BIN || "brain";
+}
 
 // Mesma classe do truncamento de hooks/brain-hook.sh (4000 B): texto gigante
 // de contexto não pode explodir o system prompt nem o prompt de compactação.
 const MAX_APPEND_CHARS = 4000;
 
-export const Plugin = async ({ client, $, directory }) => {
-  const log = (message) => {
+function runHook(directory, invocation, log, event, question) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (text) => {
+      if (!settled) {
+        settled = true;
+        resolve(text);
+      }
+    };
     try {
-      if (client && client.app && typeof client.app.log === "function") client.app.log(message);
-      else console.log(message);
-    } catch (_) {}
-  };
-
-  // Estado por invocação do plugin (= por sessão do IDE): garante no máximo
-  // UM registro de session-start por sessão, independente da ordem em que
-  // chat.message e system.transform disparam (ordem não documentada).
-  let invocation = 0;
-  let started = false;
-  let startedText = "";
-
-  const runHook = async (event, question) => {
-    try {
-      const payload = JSON.stringify({ id: `opencode-${event}-${Date.now()}-${(invocation += 1)}` });
-      const result = await $`${BRAIN_BIN} hook --event ${event} --payload ${payload} --question ${question ?? ""}`
-        .cwd(directory)
-        .nothrow();
-      const out = typeof result.text === "function" ? await result.text() : String(result ?? "");
-      const text = (out || "").trim();
-      if (text) console.log(text);
-      return text;
+      const payload = JSON.stringify({ id: `opencode-${event}-${Date.now()}-${invocation}` });
+      const child = execFile(
+        brainBin(),
+        ["hook", "--event", event, "--payload", payload, "--question", question ?? ""],
+        { cwd: directory, timeout: 15000 },
+        (err, stdout) => {
+          if (err) {
+            log(`brain: ${event} could not run (${err.message}); continuing without it`);
+            done("");
+            return;
+          }
+          const text = String(stdout ?? "").trim();
+          if (text) console.log(text);
+          done(text);
+        },
+      );
+      child.on("error", (err) => {
+        log(`brain: ${event} could not run (${err}); continuing without it`);
+        done("");
+      });
     } catch (err) {
       log(`brain: ${event} could not run (${err}); continuing without it`);
-      return "";
+      done("");
     }
-  };
+  });
+}
 
-  const ensureStarted = async (question) => {
-    if (started) return startedText;
-    started = true;
-    startedText = await runHook("session-start", question);
-    return startedText;
-  };
+// Extração defensiva (best-effort, sem forma assumida): tenta os formatos
+// conhecidos de mensagem do usuário (V1 output.message/parts e V2
+// event.message/prompt); fora disso devolve "" e o registro degrada para
+// injeção por projeto. Nunca trata texto do assistente como pergunta — o id
+// do papel é o que separa os dois.
+export function userQuestion(source) {
+  try {
+    const msg = source?.message ?? source?.prompt?.message ?? source;
+    const role = msg?.role ?? msg?.info?.role ?? source?.role ?? "";
+    if (String(role).toLowerCase() !== "user") return "";
+    const parts =
+      source?.parts ?? msg?.parts ?? source?.prompt?.parts ??
+      (typeof source?.prompt === "string" ? [{ type: "text", text: source.prompt }] : []);
+    const text = (Array.isArray(parts) ? parts : [])
+      .filter((p) => p && p.type === "text" && typeof p.text === "string" && !p.synthetic && !p.ignored)
+      .map((p) => p.text.trim())
+      .filter((t) => t.length > 0)
+      .join(" ")
+      .trim();
+    return text.slice(0, MAX_APPEND_CHARS);
+  } catch {
+    return "";
+  }
+}
 
-  // Extração defensiva (best-effort, sem forma assumida): tenta os formatos
-  // conhecidos de mensagem do usuário; fora disso devolve "" e o registro
-  // degrada para injeção por projeto. Nunca trata texto do assistente como
-  // pergunta — o id do papel é o que separa os dois.
-  const userQuestion = (output) => {
-    try {
-      const msg = output && output.message;
-      const role = (msg && (msg.role || (msg.info && msg.info.role))) || "";
-      if (String(role).toLowerCase() !== "user") return "";
-      const parts = (output && output.parts) || (msg && msg.parts) || [];
-      const text = parts
-        .filter((p) => p && p.type === "text" && typeof p.text === "string" && !p.synthetic && !p.ignored)
-        .map((p) => p.text.trim())
-        .filter((t) => t.length > 0)
-        .join(" ")
-        .trim();
-      return text.slice(0, MAX_APPEND_CHARS);
-    } catch (_) {
-      return "";
-    }
-  };
+export function appendOnly(arr, text) {
+  const t = (text || "").trim();
+  if (!t || !Array.isArray(arr)) return;
+  const clipped = t.slice(0, MAX_APPEND_CHARS);
+  // V2: event.system é objeto[] ({type:"text",text}); V1 era string[].
+  if (arr.length > 0 && typeof arr[0] === "object" && arr[0] !== null) {
+    arr.push({ type: "text", text: clipped });
+  } else {
+    arr.push(clipped);
+  }
+}
 
-  const appendOnly = (arr, text) => {
-    const t = (text || "").trim();
-    if (!t || !Array.isArray(arr)) return;
-    arr.push(t.slice(0, MAX_APPEND_CHARS));
-  };
+export default Plugin.define({
+  id: "brain-session",
+  async setup(ctx) {
+    const directory = ctx.location?.directory;
+    const log = (message) => {
+      try {
+        console.log(message);
+      } catch {}
+    };
 
-  return {
+    // Estado por invocação do plugin (= por sessão do IDE): garante no máximo
+    // UM registro de session-start por sessão, independente da ordem em que
+    // prompt e context disparam (ordem não documentada).
+    let invocation = 0;
+    let started = false;
+    let startedText = "";
+    let injected = false;
+
+    const runHookBound = (event, question) => {
+      invocation += 1;
+      return runHook(directory, invocation, log, event, question);
+    };
+
+    const ensureStarted = async (question) => {
+      if (started) return startedText;
+      started = true;
+      startedText = await runHookBound("session-start", question);
+      return startedText;
+    };
+
     // Registro (leitura): captura a pergunta real do usuário para o hook.
-    // Sem mutação — output.message/parts seguem intactos.
-    "chat.message": async (_input, output) => {
-      await ensureStarted(userQuestion(output));
-    },
-    // Injeção: primeiro system.transform da sessão anexa o resumo do brain.
-    // output.system é string[] (contrato furado = atribuir string).
-    "experimental.chat.system.transform": async (input, output) => {
+    // Sem mutação — nunca altera o evento.
+    await ctx.session.hook("prompt", async (event) => {
+      await ensureStarted(userQuestion(event));
+    });
+
+    // Injeção: primeiro context da sessão anexa o resumo do brain.
+    // Uma única vez por sessão (flag injected) — re-spawn por turno = spam.
+    await ctx.session.hook("context", async (event) => {
       const text = await ensureStarted("");
-      appendOnly(output && output.system, text);
-    },
+      if (!injected) {
+        injected = true;
+        if (event && Array.isArray(event.system)) appendOnly(event.system, text);
+      }
+    });
+
     // Handoff na fronteira que existe: registra checkpoint de fim-de-trecho
-    // e anexa o resumo a output.context. Nunca toca output.prompt.
-    "experimental.session.compacting": async (input, output) => {
-      const text = await runHook("session-end", "");
-      appendOnly(output && output.context, text);
-    },
-  };
-};
+    // e anexa o resumo ao contexto de compactação. Nunca toca event.prompt.
+    await ctx.session.hook("compaction", async (event) => {
+      const text = await runHookBound("session-end", "");
+      if (event && Array.isArray(event.context)) appendOnly(event.context, text);
+    });
+  },
+});

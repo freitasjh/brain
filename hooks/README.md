@@ -9,7 +9,7 @@ os arquivos abaixo (o instalador copia; nunca o contrário).
 | IDE | Instala (`brain setup`) | Agent-hooks no projeto | Steering | Valida (`brain doctor`) | Global |
 |-----|-------------------------|------------------------|----------|-------------------------|--------|
 | Kiro | `brain setup kiro --dir <proj>` → 4 arquivos em `<proj>/.kiro/` | `hooks/brain-session.json` (command) + `hooks/brain-learning.json` (agent) + `hooks/brain-prompt-optimizer.json` (agent) | `.kiro/steering/brain-learning.md` | D1 (hooks) + D2 (steering) | `~/.kiro/hooks/` — convenção do Kiro p/ hooks fora de projeto; documentado, não instalado pelo setup |
-| OpenCode | `brain setup opencode --dir <proj> --brain-dir <checkout>` → plugin + `opencode.json` | plugin `brain-session.js` (eventos verificados `chat.message`, `experimental.chat.system.transform`, `experimental.session.compacting`) | n/a (skill via `opencode.json`) | D3 (plugin) + D6 (skill ref) | `~/.config/opencode/plugins/brain-session.js` |
+| OpenCode | `brain setup opencode --dir <proj> --brain-dir <checkout>` → plugin + `opencode.json` | plugin `brain-session.js` V2 nativo (`ctx.session.hook("prompt"\|"context"\|"compaction")`) | n/a (skill via `opencode.json`) | D3 (plugin) + D6 (skill ref) | `~/.config/opencode/plugins/brain-session.js` |
 | Ambos | — | — | — | D4 (backend warn-nunca-fail) + D5 (DB gravável) | — |
 
 Detalhe dos instalados em `crates/brain-cli/src/setup.rs` (`kiro_target`,

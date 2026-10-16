@@ -545,7 +545,7 @@ mod tests {
                 known: &known,
                 git_remote: None,
                 prompt: &prompt,
-                record: &move |dir, e| config::save_entry_in(&cfg, dir, e),
+                record: &move |dir, e| config::save_entry_in(&cfg, dir, e, config::LockWait::hook()),
                 config_dir: Some(&root),
             },
         );
@@ -578,7 +578,7 @@ mod tests {
                 known: &known,
                 git_remote: None,
                 prompt: &first,
-                record: &move |dir, e| config::save_entry_in(&cfg, dir, e),
+                record: &move |dir, e| config::save_entry_in(&cfg, dir, e, config::LockWait::hook()),
                 config_dir: Some(&root),
             },
         );
@@ -692,7 +692,7 @@ mod tests {
     fn a_refusal_read_from_the_file_is_honoured_without_asking() {
         let root = scratch("filed");
         let wd = workdir("filed");
-        config::save_entry_in(&root, &wd, &Entry::declined()).expect("record refusal");
+        config::save_entry_in(&root, &wd, &Entry::declined(), crate::config::LockWait::hook()).expect("record refusal");
         assert!(root.join("config.json").exists(), "T1.3 must have created the file");
         let known = names(&["hive"]);
         let res = resolve(

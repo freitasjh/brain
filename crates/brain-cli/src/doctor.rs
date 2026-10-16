@@ -182,22 +182,50 @@ fn d2_steering(dir: &Path) -> Check {
     }
 }
 
-/// D3: plugin opencode registrado chamando `brain hook`.
+/// D3: plugin opencode V2 registrado chamando `brain hook`.
 fn d3_plugin(home: &Path) -> Check {
     let p = home.join(".config/opencode/plugins/brain-session.js");
-    match std::fs::read_to_string(&p) {
-        Ok(text) if text.contains("hook --event") => Check {
-            id: "D3",
-            level: Level::Ok,
-            detail: format!("plugin em {}", p.display()),
-            fix: String::new(),
-        },
-        _ => Check {
+    let text = std::fs::read_to_string(&p).ok();
+    let Some(text) = text else {
+        return Check {
             id: "D3",
             level: Level::Fail,
-            detail: format!("plugin ausente ou sem hook em {}", p.display()),
+            detail: format!("plugin ausente em {}", p.display()),
             fix: "rode `brain setup opencode`".into(),
-        },
+        };
+    };
+    let mut problems = Vec::new();
+    if !(text.contains("\"hook\"") && text.contains("\"--event\"")) {
+        problems.push("sem `hook --event` (argv)");
+    }
+    // Shape V2 (cf. hooks/opencode/brain-session.test.mjs): Plugin.define +
+    // os 3 session.hook, sem resíduo V1.
+    if !text.contains("Plugin.define") {
+        problems.push("sem `Plugin.define` (formato V2)");
+    }
+    for hook in ["\"prompt\"", "\"context\"", "\"compaction\""] {
+        if !text.contains(hook) {
+            problems.push(match hook {
+                "\"prompt\"" => "sem session.hook(\"prompt\")",
+                "\"context\"" => "sem session.hook(\"context\")",
+                _ => "sem session.hook(\"compaction\")",
+            });
+        }
+    }
+    if problems.is_empty() {
+        Check {
+            id: "D3",
+            level: Level::Ok,
+            detail: format!("plugin V2 em {}", p.display()),
+            fix: String::new(),
+        }
+    } else {
+        Check {
+            id: "D3",
+            level: Level::Fail,
+            detail: format!("plugin em {} fora do shape V2 ({})", p.display(), problems.join(", ")),
+            fix: "rode `brain setup opencode --force`".into(),
+        }
     }
 }
 
@@ -323,7 +351,7 @@ mod tests {
             ("home/.config/opencode/plugins/brain-session.js", crate::setup::opencode_plugin_js("brain")),
             (
                 "proj/opencode.json",
-                r#"{"mcpServers":{"brain":{"transport":"sse","url":"http://localhost:8321/sse"}},"instructions":["../brain/.agents/skills/brain/SKILL.md"]}"#.to_string(),
+                r#"{"mcp":{"servers":{"brain":{"type":"remote","url":"http://localhost:8321/mcp","disabled":false,"timeout":{"catalog":30000,"execution":30000}}}},"instructions":["../brain/.agents/skills/brain/SKILL.md"]}"#.to_string(),
             ),
         ] {
             let dest = base.join(rel);

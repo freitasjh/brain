@@ -27,3 +27,6 @@ flate2 = "1.1.10"
 
 [dev-dependencies]
 serde_json = "1"
+# The same lock primitive the product uses, so a test can hold the config lock
+# the way `LockFile` does instead of reimplementing `flock` semantics.
+fs2 = "0.4"

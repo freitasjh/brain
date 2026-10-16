@@ -1,3 +1,3 @@
 # brain_server — MCP server for AI agent memory (SQLite-only + Rust port)
 
-__version__ = "0.10.0"
+__version__ = "0.11.1"

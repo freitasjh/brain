@@ -329,11 +329,28 @@ pub fn mcp_router(db: String) -> Router {
 /// handler was to swap process-global state — so the tests that did asserted
 /// against whatever `BRAIN_OLLAMA_URL` happened to be, and one of them fired 60
 /// real embedding requests at whatever Ollama the developer was running.
+///
+/// # Two MCP transports, one router
+///
+/// `/mcp` is mounted as a **nested service**, not as a per-tool REST route, and
+/// that is deliberate: everything under `/mcp/*` below is this crate's own debug
+/// REST shim, one HTTP call per tool, which is *not* MCP on the wire. A client
+/// that speaks MCP (opencode V2, Claude Desktop, the MCP Inspector) cannot use
+/// any of it — it needs the JSON-RPC handshake, so it gets the real protocol
+/// service at `/mcp` and the REST shims stay reachable one level deeper.
+///
+/// `/mcp` is registered before the `/mcp/<tool>` routes only to keep the two
+/// groups adjacent in the source; matchit resolves the static segments first, so
+/// `/mcp/ping` still reaches the REST handler and never falls into the nested
+/// MCP service. `tests/streamable_http.rs` asserts exactly that, because the
+/// alternative is a 404 on the legacy shims that only shows up under a real
+/// request.
 pub fn mcp_router_with_queue(db: String, queue: Arc<EmbedQueue>) -> Router {
-    let state = AppState { db, queue };
+    let state = AppState { db: db.clone(), queue: Arc::clone(&queue) };
     Router::new()
         .route("/ping", get(mcp_ping))
         .route("/sse", get(sse_handler))
+        .nest_service("/mcp", crate::rmcp_service::streamable_service(db, queue))
         .route("/mcp/ping", get(mcp_ping).merge(post(mcp_ping)))
         .route("/mcp/status", get(mcp_status))
         .route("/mcp/store", post(mcp_store))

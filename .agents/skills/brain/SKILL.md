@@ -24,7 +24,8 @@ O servidor brain precisa estar rodando:
 
 ```bash
 # No repositório brain:
-brain serve-mcp          # MCP SSE em http://localhost:8321/sse
+brain serve-mcp          # MCP em http://localhost:8321/mcp (Streamable HTTP)
+                          # + /sse (transporte SSE legado, mesma porta e mesmas tools)
 ```
 
 O `brain` aqui é o binário Rust (`cargo run -p brain-cli -- serve-mcp`, ou o

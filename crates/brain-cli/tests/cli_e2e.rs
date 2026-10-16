@@ -1040,7 +1040,8 @@ fn e2e_setup_opencode_and_systemd() {
     let mcp = PathBuf::from(format!("{}/.config/opencode/mcp.json", home));
     assert!(mcp.exists());
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
-    assert_eq!(v["mcpServers"]["brain"]["url"], "http://localhost:8321/sse");
+    assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
+    assert_eq!(v["mcp"]["servers"]["brain"]["type"], "remote");
     // idempotent re-run without --force keeps file
     let mut cmd = Command::new(bin());
     for (k, v) in home_env(&home) {
@@ -1079,7 +1080,7 @@ fn e2e_setup_project_and_dry_run() {
     assert!(o.status.success(), "{}", out(&o));
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(format!("{}/opencode.json", proj)).unwrap()).unwrap();
     assert!(v["instructions"].as_array().unwrap().len() == 2);
-    assert!(v["mcpServers"]["brain"].is_object());
+    assert_eq!(v["mcp"]["servers"]["brain"]["url"], "http://localhost:8321/mcp");
     // dry-run creates nothing
     let proj2 = format!("/tmp/brain-setup-proj2-{}", std::process::id());
     let _ = std::fs::remove_dir_all(&proj2);

@@ -1,5 +1,18 @@
-//! Real MCP server (rmcp 0.5, SSE transport) — the wire protocol AI agents speak.
+//! Real MCP server (rmcp 0.5) — the wire protocol AI agents speak.
 //! Thin adapters over [`brain_store::Store`]; same semantics as the debug REST routes.
+//!
+//! Two transports, one service:
+//!
+//! | Path | Transport | Who uses it |
+//! |------|-----------|-------------|
+//! | `/sse` + `/message` | MCP SSE (legacy, `GET` then `POST`) | older clients, `crates/brain-cli/tests/helpers/mcp_client.py` |
+//! | `/mcp` | MCP Streamable HTTP (`POST`) | opencode V2, anything current |
+//!
+//! The distinction is not cosmetic. A Streamable HTTP client sends `POST /mcp`
+//! and *only* `POST`: pointed at `/sse` it gets `405 Method Not Allowed`, because
+//! the SSE route is a `GET` that opens a long-lived stream and the reply channel
+//! is a second, separate `POST /message`. That was measured against opencode V2
+//! and is why `/mcp` exists rather than the URL simply being documented better.
 
 use std::sync::Arc;
 
@@ -9,10 +22,15 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,
     tool, tool_handler, tool_router,
-    transport::sse_server::SseServer,
+    transport::sse_server::{SseServer, SseServerConfig},
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpService, StreamableHttpServerConfig},
+    },
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::embed_queue::EmbedQueue;
 use crate::fs_guard;
@@ -493,6 +511,123 @@ pub fn shutdown_on_sigint_or_sigterm() -> impl std::future::Future<Output = ()> 
     }
 }
 
+/// The Streamable HTTP MCP service for [`Brain`], mounted at `/mcp`.
+///
+/// `StreamableHttpService` is a plain `tower::Service` rather than an axum
+/// handler, which is what lets the *same* instance back two axum versions in this
+/// workspace (0.8 for the production router built by rmcp, 0.7 for the debug REST
+/// router in `crate::mcp_router_with_queue`).
+///
+/// The factory is called **once per client session**, so each session gets its own
+/// `Brain` — and its own `Store` handle per tool call, exactly as the SSE path
+/// does. It is `Clone + Send + Sync` state only (`String` + `Arc<EmbedQueue>`):
+/// there is no `&mut` anywhere to share, so sharing the one queue means the
+/// embedding backlog is a single backlog rather than two workers racing on the
+/// same `NULL` chunks. A second queue would double the Ollama load and halve the
+/// backoff bookkeeping's meaning.
+///
+/// `stateful_mode: true` (the default) is what gives the client a session id on
+/// `initialize` and requires it on later calls. That is the MCP spec's mode and
+/// what opencode V2 uses; stateless mode would silently break any client that
+/// keeps a session across calls.
+pub fn streamable_service(
+    db: String,
+    queue: Arc<EmbedQueue>,
+) -> StreamableHttpService<Brain, LocalSessionManager> {
+    StreamableHttpService::new(
+        move || Ok(Brain::with_queue(db.clone(), Arc::clone(&queue))),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    )
+}
+
+/// The axum app behind `serve-mcp`: legacy SSE (`/sse`, `/message`) minted by
+/// rmcp's own `SseServer`, plus Streamable HTTP at `/mcp`.
+///
+/// Both transports are mounted before returning, so the caller has exactly one
+/// router and one listener to run. Composing them is the only way to put `/mcp` on
+/// the same port as `/sse`: `SseServer::serve` binds and serves its own router
+/// internally with no injection point, so it is replaced here by
+/// [`SseServer::new`] — same routes, same handlers, same session semantics — with
+/// the extra route nested in and the serving done by the caller.
+///
+/// `bind` is a parameter even though the router does not listen on it: it is a
+/// required field of [`SseServerConfig`], and taking it here keeps the address a
+/// caller decision (which is what makes an ephemeral-port test possible).
+pub struct RmcpApp {
+    /// The router to serve. Routes: `/sse` (GET), `/message` (POST), `/mcp` (POST/GET/DELETE).
+    router: axum08::Router,
+    /// Cancels both the SSE transport loop and the axum server.
+    ct: CancellationToken,
+}
+
+/// [`RmcpApp`] bound to an ephemeral port and already serving, for tests and for
+/// any caller that wants the real protocol on a socket rather than a unit under
+/// `oneshot`.
+///
+/// Returns the address actually bound. Port 0 is *not* allowed to stay 0: the
+/// caller has to be able to reach what it started, so the listener is bound here
+/// and the resolved address handed back.
+pub async fn spawn_rmcp_app(
+    db: String,
+    queue: Arc<EmbedQueue>,
+) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
+    // Ephemeral, loopback: an MCP handshake test should not be able to reach, or be
+    // reached by, anything outside this process.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let app = rmcp_app(db, queue, addr);
+    let ct = serve_app(listener, app);
+    Ok((addr, ct))
+}
+
+/// Runs `app` on an already-bound listener and returns the token that stops it.
+///
+/// The returned token is the **parent**: cancelling it stops the SSE transport
+/// loop, the per-session workers and the axum server's graceful shutdown, and it is
+/// handed back so the caller decides *when* the server dies rather than the spawn
+/// site deciding it.
+fn serve_app(listener: tokio::net::TcpListener, app: RmcpApp) -> CancellationToken {
+    let RmcpApp { router, ct } = app;
+    // A *child* token drives the graceful shutdown, mirroring what
+    // `SseServer::serve_with_config` does: cancelling the parent stops the SSE
+    // transport loop and the per-session workers, and the shutdown signal reaches
+    // axum without the two being the same token (a self-cancelling token would
+    // trip the instant it was cancelled, before in-flight requests finished).
+    let shutdown = ct.child_token();
+    let server = axum08::serve(listener, router).with_graceful_shutdown(async move {
+        shutdown.cancelled().await;
+    });
+    tokio::spawn(async move {
+        if let Err(e) = server.await {
+            eprintln!("brain: mcp server stopped with error: {e}");
+        }
+    });
+    ct
+}
+
+/// [`RmcpApp`] for `bind`. See [`RmcpApp`] for why this is not `SseServer::serve`.
+pub fn rmcp_app(db: String, queue: Arc<EmbedQueue>, bind: std::net::SocketAddr) -> RmcpApp {
+    let ct = CancellationToken::new();
+    let (sse_server, router) = SseServer::new(SseServerConfig {
+        bind,
+        // The legacy pair, verbatim as `SseServer::serve` would set them.
+        sse_path: "/sse".to_string(),
+        post_path: "/message".to_string(),
+        ct: ct.clone(),
+        sse_keep_alive: None,
+    });
+    // Taken after the config is consumed so the SSE routes are already registered,
+    // and before `with_service` so the router can still be moved.
+    let router = router.nest_service("/mcp", streamable_service(db.clone(), Arc::clone(&queue)));
+    let served_db = db;
+    // Spawns the task that accepts transports from `/sse` and serves each on its
+    // own `Brain`. Dropping the `SseServer` instead would close that channel and
+    // make every `/sse` connection answer 500 "fail to send out transport".
+    let _ = sse_server.with_service(move || Brain::with_queue(served_db.clone(), Arc::clone(&queue)));
+    RmcpApp { router, ct }
+}
+
 /// X-04. The server, with its two ambient dependencies passed in.
 ///
 /// `queue` and `shutdown` are parameters so that the *boot path itself* is
@@ -521,13 +656,22 @@ pub async fn serve_rmcp_sse_with(
     // of it, so the server asks for it before accepting a connection.
     let recovered = crate::boot_queue(&queue, &db);
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-    let served_db = db.clone();
-    let ct = SseServer::serve(addr).await?.with_service(move || Brain::with_queue(served_db.clone(), Arc::clone(&queue)));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let app = rmcp_app(db, queue, addr);
+    let ct = serve_app(listener, app);
+    // The `/sse` line is unchanged, and unchanged on purpose: the CLI e2e suites
+    // treat this announcement as their readiness signal, and a readiness signal
+    // that moves is a test that stops watching the server it started.
     println!("mcp SSE http://0.0.0.0:{}/sse (protocol MCP 2024-11)", port);
+    println!("mcp streamable http://0.0.0.0:{}/mcp (protocol MCP 2024-11)", port);
     if recovered > 0 {
         println!("boot recovery: {recovered} note(s) re-queued for embedding");
     }
     shutdown.await;
+    // Cancel the parent token: the SSE transport loop, every per-session worker and
+    // the axum graceful shutdown are all downstream of it, which is the same
+    // teardown `SseServer::serve` + `ct.cancel()` used to perform. SIGINT and
+    // SIGTERM both land here (see [`shutdown_on_sigint_or_sigterm`]).
     ct.cancel();
     Ok(())
 }
