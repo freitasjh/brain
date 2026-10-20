@@ -295,8 +295,7 @@ impl LockWait {
     /// prints it and the decision is visibly not recorded, which is the only
     /// honest failure mode. Deliberately *not* a silent `Ok(())`.
     pub fn interactive() -> Self {
-        // MUTATION: pre-TD-016 behaviour -- hook budget and silent skip.
-        Self { attempts: HOOK_LOCK_ATTEMPTS, on_timeout: OnTimeout::Skip }
+        Self { attempts: INTERACTIVE_LOCK_ATTEMPTS, on_timeout: OnTimeout::Fail }
     }
 }
 
@@ -830,6 +829,7 @@ mod concurrency {
         // same process genuinely contends — no second process needed.
         let held = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(root.join(LOCK_NAME))
             .expect("lock file");
