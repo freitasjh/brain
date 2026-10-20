@@ -31,7 +31,7 @@ data/brain.db               → SQLite-only truth (WAL)
 ## Comandos exatos (Rust — fonte da verdade)
 
 ```bash
-cargo test --workspace                 # 510 testes únicos (521 execuções; o unittest do CLI roda listado 2x): 16 brain-core, 86 brain-store (78 lib + 6 vec_compat + 2 zero_vector_guard), 103 brain-mcp (68 lib + 29 fila + 2 export + 4 streamable_http), 65 brain-embed (37 embed_test + 28 url_redaction), 24 brain-web, 216 brain-cli (96 bin + 120 integração)
+cargo test --workspace                 # 517 testes únicos (529 execuções; o unittest do CLI roda listado 2x): 16 brain-core, 86 brain-store (78 lib + 6 vec_compat + 2 zero_vector_guard), 103 brain-mcp (68 lib + 29 fila + 2 export + 4 streamable_http), 65 brain-embed (37 embed_test + 28 url_redaction), 31 brain-web (24 lib + 3 unmatched_route + 3 viewer_embed_guard + 1 viewer_index_cwd), 216 brain-cli (96 bin + 120 integração)
 cargo test -p brain-core -- --nocapture
 cargo build --workspace                # debug; release: --release (LTO thin)
 cargo run -p brain-cli -- --db ./data/brain.db status

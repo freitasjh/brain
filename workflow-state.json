@@ -1,18 +1,14 @@
 {
   "project": "brain",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B) | ultimo ciclo: migracao OpenCode V1->V2 (plugins/mcp/instalador)",
-  "current_feature": "opencode-v2-migration",
-  "current_phase": "archived",
-  "previous_phase": "verify",
-  "next_phase": "done",
-  "type": "refactor",
+  "current_feature": "viewer-html-not-served",
+  "current_phase": "completed",
+  "previous_phase": "B2-implementation",
+  "next_phase": "commit",
+  "type": "bugfix",
   "artifacts": {
-    "exploration": ".spec/archive/20261015-opencode-v2-migration/PROPOSAL.md",
-    "spec": ".spec/archive/20261015-opencode-v2-migration/trace.md",
-    "tasks": ".spec/archive/20261015-opencode-v2-migration/tasks.md",
-    "verify": ".spec/archive/20261015-opencode-v2-migration/VERIFY.md",
-    "archive": ".spec/archive/20261015-opencode-v2-migration/"
+    "tasks": ".spec/bugs/viewer-html-not-served/TASKS.md"
   },
   "features": [
     {
@@ -81,7 +77,7 @@
       "progress": 100
     }
   ],
-  "phase": "archived",
+  "phase": "completed",
   "status": "committed 275c6e8",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
@@ -228,20 +224,21 @@
     "MCP-HTTP-01: transporte MCP Streamable HTTP em POST /mcp (rmcp transport-streamable-http-server), irmão do SSE legado em /sse — StreamableHttpService aninhado no router de producao (SseServer + nest_service) e no router de debug; mesma fila de embedding por sessao; 4 testes de integracao em tests/streamable_http.rs (handshake real initialize->initialized->tools/list->tools/call ping, GET sem sessao 401 sem derrubar, /sse ainda emite event: endpoint, shims /mcp/<tool> não sombreados); setup::mcp_url emite /mcp e asserts ajustados; CONFIGURE_MCP.md/README/AGENTS/BRAIN.MCP.md/SKILL com a URL correta + nota do 405; suite 516->520, clippy 0; bump minor 0.10.0->0.11.0",
     "MCP-HTTP-01: transporte Streamable HTTP POST /mcp no brain-mcp (feature rmcp transport-streamable-http-server + axum08/tokio-util, StreamableHttpService::new + LocalSessionManager aninhado em nest_service, SSE legado /sse intacto); 4 testes streamable_http com cliente HTTP cru; setup.rs emitindo url .../mcp; CONFIGURE_MCP.md/README/AGENTS/BRAIN.MCP/SKILL atualizados; minor bump 0.10.0->0.11.0",
     "MCP-DEPLOY-2026-10-15: cargo build --release + restart brain-mcp.service (PID 3299906, binario release novo) apos matar orfao 2843306 que segurava a porta 8321 e deixava o systemd em 'activating'; handshake real em 8321 /mcp (initialize ok, tools/call ping pong) + /sse legado emitindo event:endpoint; config global ~/.config/opencode/opencode.json apontado para http://127.0.0.1:8321/mcp com mcp.servers V2; opencode mcp list => '✓ brain connected'; sessao funcional validou ping pong, brain_search 3 hits, brain_status 949 notas cobertura 100%",
-    "TD-016: LockWait por chamador em config.rs (hook 25x10ms+Skip inalterado; setup interactive 500x10ms=5s+Fail) - fix do skip silencioso que perdia a decisao do operador; +1 unit (policy) e +1 e2e (lockheld 1,5s) com mutacao reproduzindo o comportamento antigo; suite 508->510, 10/10 workspace verdes"
+    "TD-016: LockWait por chamador em config.rs (hook 25x10ms+Skip inalterado; setup interactive 500x10ms=5s+Fail) - fix do skip silencioso que perdia a decisao do operador; +1 unit (policy) e +1 e2e (lockheld 1,5s) com mutacao reproduzindo o comportamento antigo; suite 508->510, 10/10 workspace verdes",
+    "BUGFIX viewer-html-not-served: VIEWER_INDEX embutido via include_str! (cwd-independente), fallback SPA + 404 JSON para /api/*, ServeDir removido (fecha disclosure de viewer/server.py), guard source-scan, 7 testes novos"
   ],
-  "test_count": 510,
-  "test_pass": 508,
+  "test_count": 517,
+  "test_pass": 517,
   "code_review": {
-    "last_invoked_at": "2026-10-15T00:00:00Z",
+    "last_invoked_at": "2026-10-19T00:00:00Z",
     "last_status": "passed",
     "critical_issues": 0,
     "attention_issues": 1,
-    "reviewer_notes": "Batch 1 CHANGES_REQUIRED (2 criticos: C1 panico setup.rs:359 em runtime; C2 instalador emitia mcpServers V1 vs docs V2) -> batch 2 Rust corrigiu -> re-review APPROVED 0 criticos; P1 fechado. Atencao: falso positivo do harness-validator (regex casa token em prosa via JSON.stringify fallback) — evidencia ao vivo, ver TD-014"
+    "reviewer_notes": "viewer-html-not-served: iter1 CHANGES_REQUIRED (0🔴/6🟡) -> iter2 (0🔴/4🟡) -> iter3 APPROVED. Atencao nao-bloqueante: /%61pi/status ainda 200 HTML (percent-encoding nao decodificado no namespace). Revert TD-016 em crates/brain-cli/src/config.rs presente no working tree, requer commit separado ANTES do viewer."
   },
   "harness_status": "passed",
-  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto | 2026-10-12: chunk-cap P2 — cargo test 494/0 + clippy --all-targets 0 + pytest 124/2-legadas + reindex null=0 coverage 100% (dead_lettered RAM=3 limpa no próximo restart) | 2026-10-14: VERIFY brain-specialist — cargo test 516/0 (2 runs) + clippy --all-targets 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; traceability 100% (26/26) | 2026-10-15: migracao OpenCode V1->V2 (opencode v2.0.29) — cargo test --workspace 516/0 + clippy -D warnings 0 + node --test 11/11 + brain ping pong + brain setup opencode --yes em tmp exit 0 com schema V2 mcp.servers; VERIFY 3/3 APPROVED, traceability 6/6 | 2026-10-15 (deploy MCP): handshake MCP real em 8321 /mcp (initialize + tools/call ping pong), /sse legado intacto (event:endpoint), opencode mcp list '✓ brain connected', sessao funcional com brain_search (949 notas, embedding 100%)",
-  "last_updated": "2026-10-15",
+  "harness_detail": "2026-10-10: QA browser PASS 5/5 (store 576->577 sem reload, delete 577->576, EventSource OPEN, console 0, network 2xx); release rebuild + restart 8322 ok, 8321 intacto | 2026-10-12: chunk-cap P2 — cargo test 494/0 + clippy --all-targets 0 + pytest 124/2-legadas + reindex null=0 coverage 100% (dead_lettered RAM=3 limpa no próximo restart) | 2026-10-14: VERIFY brain-specialist — cargo test 516/0 (2 runs) + clippy --all-targets 0 + pytest 124/2-legadas + hook-test 7/0 + sanity 3/3 + node 9/9; traceability 100% (26/26) | 2026-10-15: migracao OpenCode V1->V2 (opencode v2.0.29) — cargo test --workspace 516/0 + clippy -D warnings 0 + node --test 11/11 + brain ping pong + brain setup opencode --yes em tmp exit 0 com schema V2 mcp.servers; VERIFY 3/3 APPROVED, traceability 6/6 | 2026-10-15 (deploy MCP): handshake MCP real em 8321 /mcp (initialize + tools/call ping pong), /sse legado intacto (event:endpoint), opencode mcp list '✓ brain connected', sessao funcional com brain_search (949 notas, embedding 100%) | 2026-10-19 (bugfix viewer-html-not-served, iteracao 1 do review): cargo test --workspace 517 unicos/0 failed (confirmado por --list: 517 `: test`; brain-web 24 unit + 3 unmatched_route + 3 viewer_embed_guard + 1 viewer_index_cwd) + clippy --all-targets -D warnings 0 + build --workspace 0 warnings + pytest 124/2-legadas; harness scratch com o binario copiado sozinho para /tmp e cwd fora do repo: / 200 text/html 49437B (byte-igual ao VIEWER_INDEX compilado), /deep/link 200, /api/status 200 JSON, /api/nonexistent 404 JSON (curl -f exit 22), /api/stat 404; /server.py responde o documento SPA (49437B), nao o arquivo de 10960B, inclusive com cwd=raiz do repo; mutacoes: if(false) no ramo /api -> unknown_api_paths_are_404_json, ServeDir de volta -> no_production_code_resolves_a_path + stray.txt text/plain, read_to_string(&p) -> guard; 8321/8322 intactos | 2026-10-19: BUGFIX viewer-html-not-served — cargo test 517 unicos/529 execucoes/0 failed + clippy --all-targets 0 + build 0 warnings + pytest 124/2 legadas; H3 scratch binario copiado sozinho/cwd fora do repo: / 200 HTML 49437B, deep route 200, /api/* validos 200, /api desconhecidos 404 JSON (inclui //api/status), /server.py -> documento; producao 8321/8322 intacta | 2026-10-19: DEPLOY viewer 0.11.2 — build release 3m20s/0 warnings; restart brain-mcp pid 3483725 + brain-viewer pid 3496577 (exe real, nao deleted); smoke / 200 HTML 49437, /server.py agora documento (antes text/plain 10960), /api desconhecidos 404 JSON, /sse + POST /mcp initialize OK; Chrome 0 console, 8/8 network 200, 1250 nos grafo; achado P2 pre-existente: restart com SSE aberto = 90s + SIGKILL (TD-017)",
+  "last_updated": "2026-10-19",
   "tech_debt": [
     {
       "id": "TD-001",
@@ -445,13 +442,26 @@
       "severity": "P1",
       "phase": "open",
       "status": "Aberto 2026-10-15. Classificado P1 porque zera a confiabilidade do gate H1 (harness-continuous exige 0 falhas, e uma falha intermitente torna o gate nao-deterministico). NAO corrigido nesta sessao: fora do escopo aprovado (migracao + MCP) e a causa raiz (lock/backoff sob carga, ou teste sensivel a tempo) exige investigacao propria. Proxima task: rodar apenas brain-cli + embed_queue em loop para achar o limiar, e/ou aumentar robustez do lock"
+    },
+    {
+      "id": "TD-017",
+      "issues": [
+        "serve aguarda SSE /api/events infinito no graceful shutdown -> restart 90s + SIGKILL (TimeoutStopSec)"
+      ],
+      "severity": "P2",
+      "phase": "deferred",
+      "status": "aberto",
+      "evidence": ".spec/tech-debts/viewer-sse-graceful-shutdown/TASKS.md",
+      "source": "QA deploy 2026-10-19",
+      "owner": "developer-engineer"
     }
   ],
   "test_breakdown": {
-    "rust_workspace": 508,
+    "rust_workspace": 517,
+    "rust_executions": 529,
     "python_src_tests": 124,
     "python_legacy_integration_failing": 2,
-    "total": 632
+    "total": 641
   },
   "production": {
     "deployed_at": "2026-10-08",

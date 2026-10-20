@@ -321,6 +321,11 @@ curl -s -X POST http://localhost:8321/mcp \
 curl -N http://localhost:8321/sse | head -n 2
 ```
 
+O viewer serve o `viewer/index.html` **embutido no binário** (`include_str!`), então
+`brain serve` não precisa de um checkout do repositório ao lado do binário e não
+depende do diretório de onde foi iniciado. Contrapartida aceita: editar
+`viewer/index.html` só tem efeito depois de recompilar o binário.
+
 Auto-start via systemd (one-shot installer):
 
 ```bash
@@ -654,7 +659,7 @@ crates/
 └── brain-cli/src/main.rs   → clap (ping/store/read/search/delete/r…/hook/setup/project/server)
 src/brain_server/           → legado Python (compat Fase C)
 data/brain.db               → SQLite-only (WAL) — verdade única
-viewer/index.html           → viewer estático
+viewer/index.html           → documento embutido no binário (`include_str!`)
 .agents/
 ├── skills/brain/SKILL.md   → skill /brain para outros repos: as 17 tools, o contrato
 │                             assíncrono e as env vars

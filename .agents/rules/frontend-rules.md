@@ -1,9 +1,9 @@
 # Frontend Rules — viewer (brain-web)
 
 ## Viewer
-- Viewer é `viewer/index.html` estático + `crates/brain-web` axum `GET /api/status,search,read,list,graph,events` read-only sobre `brain.db`
+- Viewer é `viewer/index.html` **embutido no binário** (`brain_web::VIEWER_INDEX = include_str!("../../../viewer/index.html")`) + `crates/brain-web` axum `GET /api/status,search,read,list,graph,events` read-only sobre `brain.db`
 - No Vue/Pinia/PrimeVue — não há SPA complexo nesta fase
-- Servir estático via `brain_web::router` + `axum::serve` em `brain serve --port 8322`
+- Servir o índice embutido via `brain_web::router` + `axum::serve` em `brain serve --port 8322`; fallback: rota não-API → documento (SPA), `/api/*` desconhecida → `404` JSON. **Nenhum diretório é servido** (`ServeDir` removido — `GET /server.py` respondia `200 text/plain` em `0.0.0.0:8322`); trade-off aceito: editar `viewer/index.html` exige rebuild do binário
 - Live update do grafo (viewer-live-graph, 2026-10-10): `GET /api/events` SSE (`text/event-stream`, evento `graph-changed`, polling 2 s sobre snapshot `(count_notes(), count_chunks())`); frontend usa `EventSource` idempotente via `ensureGraphEventSource()` com lifecycle separado do RAF loop — `renderGraph()` cancela só o RAF e garante a fonte aberta, `stopGraph()` fecha só ao sair da view de grafo
 
 ## No-SPA Rule (Fase A+B)

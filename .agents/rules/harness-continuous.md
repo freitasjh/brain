@@ -13,22 +13,22 @@
 5. Harness precede orgulho.
 6. Regressão bloqueia release.
 7. **Documento desatualizado é defeito.** Este arquivo já afirmava `16 tests` quando
-   havia 326, e mandava `rm -f ./data/brain.db` contra um servidor no ar. Truthfulness
+   havia 326 (hoje 517), e mandava `rm -f ./data/brain.db` contra um servidor no ar. Truthfulness
    é parte do portão, não um extra.
 
 ## H1 Suite Completa — **dois portões independentes**
 
-### H1.1 Os números reais (medidos em `0d1b6cb` / `v0.9.1`)
+### H1.1 Os números reais (medidos em 2026-10-19, `v0.11.2`)
 
 | Crate | Testes | Binários |
 |-------|--------|----------|
-| `brain-cli` | **63** | 18 `main.rs` + `cli_e2e` 27 + `mcp_sse_window` 5 + `server_start` 8 + `serve_viewer_shutdown` 2 + `server_start_stdio_shutdown` 2 + `serve_mcp_shutdown` 1 |
-| `brain-store` | **79** | 71 `lib.rs` + `vec_compat` 6 + `zero_vector_guard` 2 |
-| `brain-mcp` | **99** | 68 `lib.rs` + `embed_queue` 29 + `export_guard` 2 |
+| `brain-cli` | **216** | 96 `main.rs` (bin) + 120 integração (`cli_e2e`, `mcp_sse_window`, `server_start`, `serve_viewer_shutdown`, `server_start_stdio_shutdown`, `serve_mcp_shutdown`) |
+| `brain-store` | **86** | 78 `lib.rs` + `vec_compat` 6 + `zero_vector_guard` 2 |
+| `brain-mcp` | **103** | 68 `lib.rs` + `embed_queue` 29 + `export_guard` 2 |
 | `brain-embed` | **65** | `embed_test` 37 + `url_redaction` 28 |
-| `brain-core` | **10** | `lib.rs` |
-| `brain-web` | **10** | `lib.rs` |
-| **Rust — total** | **326** | `cargo test --workspace` → 0 failed |
+| `brain-core` | **16** | `lib.rs` |
+| `brain-web` | **31** | `lib.rs` 24 + `unmatched_route` 3 + `viewer_embed_guard` 3 + `viewer_index_cwd` 1 |
+| **Rust — total** | **517** | `cargo test --workspace` → 0 failed (529 execuções por binários duplicados do CLI) |
 
 ```
 .venv/bin/python -m pytest src/tests/ -q   →  124 passed, 2 failed  (124 = o total,
@@ -246,7 +246,7 @@ essa é a de produção. Shutdown é SIGINT **e** SIGTERM — see F6.
 ```markdown
 ## Pre-Completion Checklist
 ### Build & testes  (os DOIS portões)
-- [ ] `cargo test --workspace` → 326 passed / 0 failed
+- [ ] `cargo test --workspace` → 517 únicos passed / 0 failed
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` → 0
 - [ ] `.venv/bin/python -m pytest src/tests/ -q` → 124 passed, 2 legadas
 - [ ] `cargo build --workspace` → 0 erros
