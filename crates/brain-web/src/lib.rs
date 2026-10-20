@@ -1,9 +1,8 @@
-use axum::{extract::{Query, State}, Json, Router, routing::get, debug_handler, http::StatusCode, response::{Html, IntoResponse, sse::{Event, Sse}}};
+use axum::{extract::{Query, State}, Json, Router, routing::get, debug_handler, response::{Html, IntoResponse, sse::{Event, Sse}}};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
 use tokio_stream::wrappers::IntervalStream;
 use tokio_stream::StreamExt;
 
@@ -18,25 +17,106 @@ pub struct ReadQ { path: String }
 
 pub fn router(db: String) -> Router {
     let state = AppState{ db };
-    // static viewer fallback
-    let serve_dir = ServeDir::new("viewer").not_found_service(axum::routing::get(serve_index));
+    // The viewer document is the only static asset this crate has, and it comes
+    // from the binary (see `VIEWER_INDEX`). `ServeDir` is **gone**, not gated
+    // behind `#[cfg(debug_assertions)]`: it served *whatever* the process cwd
+    // happened to hold under `viewer/`, and on a repo checkout that included
+    // `viewer/server.py` — the legacy Python viewer — so `GET /server.py`
+    // answered `200 text/plain` (10_960 B) on the production bind `0.0.0.0:8322`.
+    // A build gate would have kept that reachable in every `cargo run`; deleting
+    // the service removes the class. Cost, already paid by the embed and recorded
+    // on `VIEWER_INDEX`: editing `viewer/index.html` needs a rebuild.
+    //
+    // `.fallback` and not `.not_found_service`: the latter rewrites the fallback's
+    // status to 404, which is how the SPA half of the bug survived — `/` was
+    // fixed by the explicit route below while `/some/deep/route` still answered
+    // `404` carrying the viewer body.
     Router::new()
+        .route("/", get(serve_index))
         .route("/api/status", get(status))
         .route("/api/search", get(search))
         .route("/api/read", get(read))
         .route("/api/list", get(list))
         .route("/api/graph", get(graph))
         .route("/api/events", get(events))
-        .fallback_service(serve_dir)
+        .fallback(unmatched_route)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
+/// The viewer document, embedded at compile time — never read from disk at
+/// runtime.
+///
+/// # Why this is not a cwd-relative read any more
+///
+/// It was: `tokio::fs::read_to_string("viewer/index.html")`. That resolves
+/// against the process cwd, so `/` answered `404 viewer/index.html not found` for
+/// every process not started from the repo root — which is every real install.
+/// `cargo install --path crates/brain-cli` ships the binary alone and the systemd
+/// unit `brain setup systemd` writes has no `WorkingDirectory`, so the service
+/// came up with cwd=`$HOME`. The `/api/*` routes were always absolute in the
+/// router, so the API worked while the HTML did not, and the failure presented as
+/// "the API installed, the viewer did not".
+///
+/// Embedding deletes the cwd from the question rather than trying to pin it: the
+/// same device `setup.rs` already uses for the Kiro/OpenCode hooks. The trade-off
+/// is deliberate and accepted — editing `viewer/index.html` now needs a rebuild of
+/// the binary to take effect.
+///
+/// The path is relative to this file: `crates/brain-web/src/` → repo root.
+///
+/// `viewer/__pycache__/` and `viewer/server.py` (the legacy Python viewer) are
+/// **not** part of this: no directory is served at all, so nothing in `viewer/`
+/// other than this one file is reachable over HTTP. See `router`.
+pub const VIEWER_INDEX: &str = include_str!("../../../viewer/index.html");
+
+/// Serves [`VIEWER_INDEX`] with `200 text/html`. No filesystem access, therefore
+/// no cwd dependency and no failure mode that depends on where the binary was
+/// started from.
 async fn serve_index() -> impl IntoResponse {
-    match tokio::fs::read_to_string("viewer/index.html").await {
-        Ok(s) => Html(s).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "viewer/index.html not found").into_response(),
+    Html(VIEWER_INDEX)
+}
+
+/// Whatever no explicit route matched. Two answers, and the split is the point:
+/// a deep non-API path gets the document, an unknown `/api/*` path gets `404`
+/// JSON.
+///
+/// The viewer is a single page, so a client route such as `/some/deep/route` has
+/// to be answered with the document — that is the SPA half, and answering `404`
+/// there is half of the bug this module fixed.
+///
+/// `/api/*` is not the SPA. Under the previous `ServeDir` fallback an unknown API
+/// path answered `200 text/html` carrying the viewer, so a typo in the URL —
+/// `/api/stat` — looked like success to `curl -f` (exit 0) and to the viewer,
+/// which then string-searched an HTML document for JSON. An unknown API path is a
+/// client mistake and is reported as one. The body names the path back so the
+/// caller can see the typo it made.
+///
+/// The namespace test is a prefix, deliberately: `/api` and everything under it is
+/// reserved, so `/apiary` would also get the `404` rather than the document. The
+/// trade-off is the alternative — enumerating the known `/api/*` routes and
+/// letting anything else fall through to the document — which is the bug shape
+/// back the first time someone forgets to add a route to the list.
+///
+/// Leading slashes are stripped before the test, because the namespace is *not*
+/// anchored at exactly one slash. A base URL that ends in `/` concatenated with
+/// `/api/status` — the ordinary shape of `format!("{base}/api/status")` against
+/// `http://host:8322/` — sends `//api/status`, which misses every explicit route
+/// and lands here. Matching on the raw path answered it with the document: the
+/// same bug as `/api/stat`, reachable without a typo. Only the `/` prefix is
+/// normalised; `/API/x` stays out of the namespace on purpose (the test is
+/// case-sensitive, and a case mistake is a client route as far as this router is
+/// concerned).
+async fn unmatched_route(req: axum::extract::Request) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    if path.trim_start_matches('/').starts_with("api") {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not found", "path": path })),
+        )
+            .into_response();
     }
+    Html(VIEWER_INDEX).into_response()
 }
 
 /// Pure, synchronous projection of chunk embedding coverage into the
@@ -345,8 +425,12 @@ mod tests {
         s.chunk_insert(nid, path, "regras", Some("global"), content, 0, 1, None, &[], embedding).unwrap();
     }
 
-    /// `viewer/index.html`, located from the manifest dir because `cargo test`
-    /// runs with cwd set to the crate directory (see `test_serve_index_fallback`).
+    /// `viewer/index.html`, located from the manifest dir: `cargo test` runs with
+    /// cwd set to the crate directory (`crates/brain-web`), so a relative
+    /// `viewer/index.html` would resolve to `crates/brain-web/viewer/index.html`,
+    /// which does not exist. `CARGO_MANIFEST_DIR` is a compile-time absolute path
+    /// and therefore independent of the working directory — the same property
+    /// `VIEWER_INDEX` relies on.
     fn viewer_source() -> String {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../viewer/index.html");
@@ -1063,12 +1147,26 @@ mod tests {
         let _ = std::fs::remove_file(&db);
     }
 
+    /// The viewer is served from the embedded constant, and the embedded copy is
+    /// the file on disk. Two properties, both needed: the first says the response
+    /// never touches the filesystem (so cwd cannot matter — the cwd half is
+    /// `tests/viewer_index_cwd.rs`, which owns its own process to move cwd
+    /// safely); the second says `include_str!` cannot silently drift from the
+    /// source-of-truth `viewer/index.html`, which is the failure a rebuild-only
+    /// workflow would otherwise hide.
     #[test]
-    fn test_serve_index_fallback() {
-        // cargo runs unit tests with cwd=crate dir -> viewer/index.html missing
+    fn test_serve_index_serves_the_embedded_viewer() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let resp = rt.block_on(async { serve_index().await.into_response() });
-        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let ctype = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ctype.starts_with("text/html"), "content-type was `{ctype}`");
+        assert_eq!(VIEWER_INDEX, viewer_source(), "the embedded viewer must be viewer/index.html, byte for byte");
     }
 
     // ------------------------------------------------------------------
