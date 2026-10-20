@@ -250,7 +250,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "brain-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "brain-core"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "brain-embed"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "brain-mcp"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "brain-store"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyhow",
  "brain-core",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "brain-web"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "axum 0.7.9",
  "brain-core",
