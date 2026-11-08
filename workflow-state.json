@@ -3,9 +3,9 @@
   "version": "0.12.0",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B) | ultimo ciclo: migracao OpenCode V1->V2 (plugins/mcp/instalador)",
   "current_feature": "authority-boost-dominates-search",
-  "current_phase": "B3-review-passed",
+  "current_phase": "committed",
   "previous_phase": "B2-implementation",
-  "next_phase": "B4-finalization (HITL: commit + close issue #1)",
+  "next_phase": "C3 debt (truncate(50) + clamp 1,20) when a wide-query case appears",
   "type": "bugfix",
   "artifacts": {
     "tasks": ".spec/bugs/viewer-html-not-served/TASKS.md",
@@ -79,8 +79,8 @@
       "progress": 100
     }
   ],
-  "phase": "bugfix-B3-review",
-  "status": "fix + 5 regression tests; code review APPROVED (0 critical, 4 attention fixed, 3 suggestions fixed); version 0.12.0",
+  "phase": "bugfix-complete",
+  "status": "committed d9ba1e3 (0.12.0) — issue #1 stays open for C3 wide-query test; GitHub comment pending manual paste",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
@@ -117,7 +117,7 @@
   },
   "harness_status": "passed",
   "harness_detail": "cargo test --workspace 534 passed / 0 failed; cargo clippy --workspace --all-targets -- -D warnings 0; cargo build --workspace 0; pytest 124 passed / 2 known legacy (H1.4); H3 scratch 12 steps + 12b on ephemeral ports; production :8321 connection_`PID 1370` untouched",
-  "last_updated": "2026-11-08T17:14:19Z",
+  "last_updated": "2026-11-08T22:21:45Z",
   "tech_debt": [
     {
       "id": "TD-001",
