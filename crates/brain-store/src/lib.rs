@@ -22,6 +22,60 @@ const BUSY_TIMEOUT_MS: u32 = 5_000;
 /// Bytes per stored embedding (`f32` little-endian).
 const EMBED_BLOB_BYTES: usize = EMBEDDING_DIM * 4;
 
+/// Layer authority, applied as a **multiplier** on the fused RRF score.
+///
+/// The RRF scale this multiplies: each stream contributes `1.0/(60.0 + rank)`
+/// (`Store::search`), so rank 1 is `1/61 ≈ 0.01639` and the ceiling of all four
+/// streams summed is `4/61 ≈ 0.06557`.
+///
+/// The previous implementation *added* `0.15` for `arquitetura`/`regras` (and
+/// `0.10` for `pinned`) to that score. Against the numbers above, `0.15` is
+/// **9.15x** a rank-1 stream and **2.3x** the four-stream ceiling, and the
+/// defect is exactly that it is a *constant*: it was added to every base, so a
+/// note in the layer gained the same absolute `0.15` whether it was rank 1 of a
+/// stream or in none of them. Measured on the production corpus (issue #1,
+/// `project=atlas-agenda`, query "grade lote mensal cascata"): 31 notes with
+/// `rrf_fts = 0.0` and `rank_vec >= 2` scored `>= 0.15` purely from the additive
+/// constant and pushed the note ranked #2 in FTS and #4 in the vector stream to
+/// position 32 of 51.
+///
+/// The factor keeps the zero-base property — `0.0 * 1.15 == 0.0`, so a note with
+/// no hit in any stream stays at zero instead of vaulting over every real hit —
+/// and composes with [`AUTHORITY_PINNED_FACTOR`] multiplicatively
+/// (`regras` + `pinned` = `1.15 * 1.10 = 1.265x`).
+///
+/// # What the factor buys, in rank positions
+///
+/// The shift is a measured number of rank positions, not an assertion about
+/// near-ties. A note at stream rank `r` carrying factor `f` scores
+/// `f/(60 + r)`, so it lands where an unboosted note at
+///
+/// ```text
+/// r_eq = (60 + r)/f - 60
+/// ```
+///
+/// would, i.e. it moves up `r - r_eq = (f - 1) * (r + 60) / f` **rank positions**
+/// (exact, from `f/(60 + r) == 1/(60 + r_eq)`):
+///
+/// | base rank `r` | factor `f` | behaves as rank `r_eq` | positions bought |
+/// |---|---|---|---|
+/// | 10 | `1.15` (layer) | `0.87` | `9.1` |
+/// | 20 | `1.265` (layer + pinned) | `3.24` | `16.8` |
+///
+/// The rank-10 case as a score comparison: `1.15/70 = 0.016429` against rank 1's
+/// `1/61 = 0.016393` — it does not tie rank 1, it beats it, and it would keep
+/// beating it down to rank `61 * 1.15 - 60 = 10.15`. The purchased depth grows
+/// with `r` (~14 positions by rank 50), which is why these constants have to stay
+/// this small: the factor multiplies a score that still decays with rank, whereas
+/// the old constant swamped that decay over its whole range (a stream spans
+/// `1/61..1/110 = 0.0164..0.0091`, so `0.15` was 9x to 16x any single stream).
+pub const AUTHORITY_LAYER_FACTOR: f32 = 1.15;
+
+/// `pinned` authority, a multiplier on the fused RRF score — see
+/// [`AUTHORITY_LAYER_FACTOR`] for why it multiplies and why the old `+= 0.1`
+/// (6.1x a rank-1 stream) was the same defect at a smaller scale.
+pub const AUTHORITY_PINNED_FACTOR: f32 = 1.10;
+
 /// Whether a rusqlite error is a lock conflict, i.e. worth retrying.
 ///
 /// X-01. `Error::SqliteFailure` carries the extended code, and both
@@ -1998,10 +2052,19 @@ impl Store {
             let rrf_graph = graph_scores.get(&p).copied().unwrap_or(0.0);
             let base = rrf_vec + rrf_fts + rrf_ent + rrf_graph;
             let (layer_v, _scope_v, _expires_v, _tags_s, _pid, pinned) = meta_map.get(&p).map(|(l,s,e,t,pid,pinned)| (l.clone(), s.clone(), e.clone(), t.clone(), *pid, *pinned)).unwrap_or(("".to_string(), None, None, "[]".to_string(), None, 0));
-            let mut boost = 0.0;
-            if ["arquitetura","regras"].contains(&layer_v.as_str()) { boost += 0.15; }
-            if pinned!=0 { boost += 0.1; }
-            (p, base+boost, rrf_vec, rrf_fts, rrf_ent, rrf_graph, boost)
+            // Authority scales what relevance produced (multiplicative), it does
+            // not add a constant. Reason and the measured scale are in
+            // `AUTHORITY_LAYER_FACTOR`: the old `+= 0.15` was 2.3x the ceiling of
+            // all four RRF streams summed (4/61), so a note with no hit anywhere
+            // outranked real hits. Here a zero-base note stays zero.
+            let mut factor = 1.0f32;
+            if ["arquitetura","regras"].contains(&layer_v.as_str()) { factor *= AUTHORITY_LAYER_FACTOR; }
+            if pinned!=0 { factor *= AUTHORITY_PINNED_FACTOR; }
+            let score = base * factor;
+            // `explain.authority` stays the *effective* delta, so `--explain`
+            // keeps closing the account: `score == base + authority`.
+            let authority = score - base;
+            (p, score, rrf_vec, rrf_fts, rrf_ent, rrf_graph, authority)
         }).collect();
         results.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
         results.truncate(top_k);
@@ -2765,6 +2828,298 @@ mod tests {
         assert!(!res.iter().any(|r| r.path.starts_with("regras/global/distra-")), "distractor without project leaked into filtered FTS");
         let hit = res.iter().find(|r| r.path == "regras/global/alvo-fts50").unwrap();
         assert!(hit.explain.as_ref().map(|e| e.rrf_fts).unwrap_or(0.0) > 0.0, "target arrived without the FTS stream");
+    }
+
+    // ------------------------------------------------------------------
+    // authority-boost-scale (issue #1): layer/pin is a tie-break *factor* on
+    // the fused RRF score, not an additive constant that outranks relevance.
+    //
+    // RRF scale, so the assertions below are readable: a stream contributes
+    // `1/(60 + rank)`, rank 1 = 1/61, and all four streams summed cap at 4/61.
+    // ------------------------------------------------------------------
+
+    /// A vector with `dot(v, qv) == 0`, i.e. cosine 0 against `qv`.
+    ///
+    /// `v[0]` is chosen so the dot product cancels exactly rather than relying on
+    /// `fixture_vec` producing an unrelated direction — it does not. The fixture
+    /// is `((i + seed) % 17 + 1) / 16`, so it is periodic mod 17 and *every* pair
+    /// of seeds is positively correlated: over the 136 seed pairs the cosine
+    /// ranges from `0.6564` (seeds 0/9) to `0.9245` (seeds 13/14), and seeds
+    /// congruent mod 17 give the identical vector (`1.0000`, e.g. 0/17). A
+    /// `fixture_vec` distractor would therefore be a very good vector match, not
+    /// an orthogonal one — which is the reason this helper exists.
+    ///
+    /// Precondition: `qv[0] != 0.0` (every `fixture_vec` has `qv[0] >= 1/16`), so
+    /// the division below has a finite solution.
+    fn orthogonal_vec(qv: &[f32]) -> Vec<f32> {
+        debug_assert!(
+            qv[0] != 0.0,
+            "orthogonal_vec divides by qv[0]: a query vector with a zero first component leaves no finite v[0]"
+        );
+        let tail: f32 = qv[1..].iter().sum();
+        let mut v = vec![1.0f32; qv.len()];
+        v[0] = -tail / qv[0];
+        v
+    }
+
+    /// T1 — the issue #1 discriminator: 31 layer notes with no relevance signal
+    /// must not outrank the single note that is #1 in both FTS and the vector
+    /// stream.
+    ///
+    /// Distractors are `regras` (layer factor 1.15), owned by the filtered
+    /// project, textually unrelated to the query, and carry a chunk whose
+    /// cosine against the query vector is 0 — the production shape from issue
+    /// #1 (`rrf_fts = 0.0`, `rank_vec >= 2`, 31 notes at `score >= 0.15`). The
+    /// target is `estudos` + `pinned`, linked to the project with
+    /// `note_link_project`, matched by a rare term in its body (FTS rank 1) and
+    /// carrying the query vector itself (cosine 1.0, vector rank 1).
+    ///
+    /// Mutation that must fail this test: restoring the additive boost
+    /// (`score = base + 0.15` for `regras`). The distractors then score
+    /// `0.15 + 1/62 = 0.1661` and the target `0.10 + 2/61 = 0.1328`, so the
+    /// target drops out of the top 20 entirely — the production symptom,
+    /// position 32 of 51.
+    #[test]
+    fn authority_does_not_let_a_layer_outrank_relevance() {
+        let s = test_store();
+        let proj = s.project_create("bench", "").unwrap();
+        let qv = fixture_vec(3);
+        let ov = orthogonal_vec(&qv);
+        for i in 0..31 {
+            let path = format!("regras/projetos/bench/distra-{i:02}");
+            let body = format!("## distrator {i} sobre outro assunto");
+            let nid = s
+                .note_upsert(&path, "regras", Some("projetos"), &body, Some(proj.id), &[], false, None)
+                .unwrap();
+            s.chunk_insert(nid, &path, "regras", Some("projetos"), &body, 0, 1, Some(proj.id), &[], Some(&ov))
+                .unwrap();
+        }
+        let target = "estudos/global/alvo-pinned";
+        let body = "## alvotokenzz grade lote mensal cascata";
+        let nid = s
+            .note_upsert(target, "estudos", Some("global"), body, None, &[], true, None)
+            .unwrap();
+        s.chunk_insert(nid, target, "estudos", Some("global"), body, 0, 1, None, &[], Some(&qv))
+            .unwrap();
+        s.note_link_project(target, "bench").unwrap();
+
+        let res = s
+            .search("alvotokenzz", Some(&qv), None, None, Some("bench"), None, 20, true)
+            .unwrap();
+        let paths: Vec<&str> = res.iter().map(|r| r.path.as_str()).collect();
+        let pos = paths
+            .iter()
+            .position(|p| *p == target)
+            .unwrap_or_else(|| panic!("target absent from top 20: {paths:?}"));
+        assert!(
+            pos < 3,
+            "target at position {} of {} — layer-only notes outranked it: {paths:?}",
+            pos + 1,
+            res.len()
+        );
+        let target_score = res[pos].score;
+        for r in res.iter().filter(|r| r.path.contains("distra-")) {
+            assert!(
+                r.score < target_score,
+                "distractor {} scores {} >= target {} — the layer factor is acting as an additive boost",
+                r.path,
+                r.score,
+                target_score
+            );
+        }
+        let e = res[pos].explain.as_ref().unwrap();
+        assert!(e.rrf_fts > 0.0, "target must arrive through the FTS stream");
+        assert!(e.rrf_vec > 0.0, "target must arrive through the vector stream");
+    }
+
+    /// T2 — a `regras` note whose only signal is a near-zero vector hit must
+    /// not overtake an `estudos` note that is FTS rank 1.
+    ///
+    /// Twenty filler chunks share the query vector (cosine 1.0), so the layer
+    /// note (cosine 0) lands at vector rank >= 21: base `1/81 ≈ 0.01235`, times
+    /// 1.15 = `0.0142`. The `estudos` note is FTS rank 1 with no chunk: base
+    /// `1/61 ≈ 0.01639`. A factor cannot bridge that gap; the additive 0.15
+    /// could and did (`0.162` vs `0.016`), which is the mutation this catches.
+    #[test]
+    fn authority_does_not_lift_a_thin_layer_hit_over_an_fts_hit() {
+        let s = test_store();
+        let qv = fixture_vec(11);
+        let ov = orthogonal_vec(&qv);
+        for i in 0..20 {
+            let path = format!("estudos/global/filler-{i:02}");
+            let body = format!("## filler {i}");
+            let nid = s
+                .note_upsert(&path, "estudos", Some("global"), &body, None, &[], false, None)
+                .unwrap();
+            s.chunk_insert(nid, &path, "estudos", Some("global"), &body, 0, 1, None, &[], Some(&qv))
+                .unwrap();
+        }
+        let layer_path = "regras/global/thin-vector-only";
+        let nid = s
+            .note_upsert(layer_path, "regras", Some("global"), "## nada em comum com a consulta", None, &[], false, None)
+            .unwrap();
+        s.chunk_insert(nid, layer_path, "regras", Some("global"), "nada em comum", 0, 1, None, &[], Some(&ov))
+            .unwrap();
+        let fts_path = "estudos/global/fts-rank-one";
+        s.note_upsert(fts_path, "estudos", Some("global"), "## ftsrankonezz termo exclusivo", None, &[], false, None)
+            .unwrap();
+
+        let res = s
+            .search("ftsrankonezz", Some(&qv), None, None, None, None, 40, true)
+            .unwrap();
+        let layer_hit = res
+            .iter()
+            .find(|r| r.path == layer_path)
+            .unwrap_or_else(|| panic!("layer note must still be a candidate via its vector chunk"));
+        let fts_hit = res
+            .iter()
+            .find(|r| r.path == fts_path)
+            .expect("the FTS hit must be present");
+        assert_eq!(
+            fts_hit.explain.as_ref().unwrap().rank_fts,
+            Some(1),
+            "precondition: the estudos note is FTS rank 1"
+        );
+        assert!(
+            fts_hit.score > layer_hit.score,
+            "layer note scored {} and outranked the FTS rank-1 estudos note at {}",
+            layer_hit.score,
+            fts_hit.score
+        );
+    }
+
+    /// T3 — isolation holds: a target linked to one project never appears when
+    /// another project is filtered.
+    ///
+    /// The pre-existing project-filter tests
+    /// (`project_filter_vector_stream_includes_linked_notes`,
+    /// `project_filter_session_note_needs_a_link_to_appear`,
+    /// `project_filter_unknown_project_returns_empty_without_error`,
+    /// `project_filter_never_leaks_an_unlinked_owner`,
+    /// `project_filter_fts_finds_a_target_past_the_global_top_50`) are untouched
+    /// by this batch and must stay green.
+    #[test]
+    fn authority_does_not_leak_a_linked_target_into_another_project() {
+        let s = test_store();
+        let bench = s.project_create("bench-iso", "").unwrap();
+        s.project_create("outro-iso", "").unwrap();
+        let qv = fixture_vec(7);
+        let target = "estudos/global/alvo-iso";
+        let body = "## alvoiso token";
+        let nid = s
+            .note_upsert(target, "estudos", Some("global"), body, Some(bench.id), &[], true, None)
+            .unwrap();
+        s.chunk_insert(nid, target, "estudos", Some("global"), body, 0, 1, Some(bench.id), &[], Some(&qv))
+            .unwrap();
+        s.note_link_project(target, "bench-iso").unwrap();
+
+        let mine = s
+            .search("alvoiso", Some(&qv), None, None, Some("bench-iso"), None, 10, true)
+            .unwrap();
+        assert!(mine.iter().any(|r| r.path == target), "owner project must still see its linked target");
+        let other = s
+            .search("alvoiso", Some(&qv), None, None, Some("outro-iso"), None, 10, true)
+            .unwrap();
+        assert!(
+            !other.iter().any(|r| r.path == target),
+            "target leaked into another project under the multiplicative factor: {:?}",
+            other.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T4 — `pinned` still decides the order between notes whose bases differ
+    /// by one FTS position (1/61 vs 1/62, a 1.6% gap).
+    ///
+    /// That is the intent the old constant encoded — a pin orders two nearly
+    /// equal bases — and the factor preserves it: 1.10 is wider than the 1.6%
+    /// rank gap, so the pinned note leads whichever of the two ranks it lands on.
+    /// Both notes carry the same body and same-length paths, so bm25 cannot
+    /// separate them meaningfully.
+    ///
+    /// Note the factor is *wider* than the gap this test pins down: at rank 2,
+    /// `1.10/62 = 0.017742` against `1/61 = 0.016393` is already 8.2% ahead, i.e.
+    /// ~5.6 rank positions bought (`(f - 1)(r + 60)/f`). This test fixes the
+    /// direction, not the scale — the scale is what the `authority` delta below
+    /// measures.
+    ///
+    /// Mutation that must fail this test: dropping the pin factor
+    /// (`factor = 1.0` for every note). `authority` then collapses to `0` for the
+    /// pinned note against the asserted `base * (1.10 - 1.0)`, so the second
+    /// assertion fails deterministically; the ordering assertion fails too
+    /// whenever the pinned note is not already FTS rank 1.
+    ///
+    /// The **ordering** assertion alone cannot discriminate the additive version:
+    /// under `score = base + 0.10` the pinned note also always wins, in any base,
+    /// because a positive constant is added to exactly one of the two notes. What
+    /// separates the implementations is the `authority` delta assertion below:
+    /// multiplicative authority is `base * 0.10 ≈ 0.0016`, additive authority is
+    /// `0.10` regardless of base — a 61x-62x difference, far outside the `1e-6`
+    /// tolerance.
+    #[test]
+    fn pinned_still_decides_between_near_equal_bases() {
+        let s = test_store();
+        let body = "## pintokenzz corpo identico";
+        s.note_upsert("estudos/global/pin-a", "estudos", Some("global"), body, None, &[], true, None)
+            .unwrap();
+        s.note_upsert("estudos/global/pin-b", "estudos", Some("global"), body, None, &[], false, None)
+            .unwrap();
+        let res = s.search("pintokenzz", None, None, None, None, None, 5, true).unwrap();
+        assert_eq!(res.len(), 2, "both notes are FTS candidates");
+        assert_eq!(
+            res[0].path, "estudos/global/pin-a",
+            "pinned note must lead, got {:?}",
+            res.iter().map(|r| (&r.path, r.score)).collect::<Vec<_>>()
+        );
+        let e = res[0].explain.as_ref().unwrap();
+        let base = e.rrf_vec + e.rrf_fts + e.rrf_entity + e.rrf_graph;
+        assert!(
+            (e.authority - base * (AUTHORITY_PINNED_FACTOR - 1.0)).abs() <= 1e-6,
+            "authority {} is not the pin factor's delta over base {}",
+            e.authority,
+            base
+        );
+    }
+
+    /// T5 — `--explain` keeps closing the account: `score == base + authority`,
+    /// and the two factors compose multiplicatively (`regras` + `pinned` =
+    /// `1.15 * 1.10 = 1.265x`).
+    ///
+    /// `authority` is consumed only by `--explain` (the CLI serialises
+    /// `SearchExplain` verbatim), so it has to be the *effective* delta and not
+    /// the nominal constant; an explain that reports `0.15` while the score
+    /// moved by `0.15 * base` would be a lie in the one place operators look.
+    #[test]
+    fn explain_authority_stays_the_effective_delta() {
+        let s = test_store();
+        let path = "regras/global/pinned-explained";
+        s.note_upsert(path, "regras", Some("global"), "## explaintokenzz", None, &[], true, None)
+            .unwrap();
+        let res = s.search("explaintokenzz", None, None, None, None, None, 5, true).unwrap();
+        let hit = res.iter().find(|r| r.path == path).expect("hit");
+        let e = hit.explain.as_ref().unwrap();
+        let base = e.rrf_vec + e.rrf_fts + e.rrf_entity + e.rrf_graph;
+        let composed = AUTHORITY_LAYER_FACTOR * AUTHORITY_PINNED_FACTOR;
+        assert!(
+            (hit.score - (base + e.authority)).abs() <= 1e-6,
+            "score {} != base {} + authority {}",
+            hit.score,
+            base,
+            e.authority
+        );
+        assert!(
+            (e.authority - base * (composed - 1.0)).abs() <= 1e-6,
+            "authority {} is not the composed delta ({}x) over base {}",
+            e.authority,
+            composed,
+            base
+        );
+        assert!(
+            (hit.score - base * composed).abs() <= 1e-6,
+            "score {} != base {} * {} — the factors did not compose multiplicatively",
+            hit.score,
+            base,
+            composed
+        );
     }
 
     #[test]

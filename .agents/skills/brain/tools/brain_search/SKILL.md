@@ -50,10 +50,15 @@ depois — o que ela traz é contexto que evita retrabalho.
 ## Como fica o ranking
 
 Quatro streams fundidos por RRF (k=60) — vetor, FTS5, entidade e grafo, cada um
-pontuado `1.0/(60.0 + rank)` (`brain-store:1643,1719,1733,1744`) — mais um
-**boost de autoridade**: `+0.15` para `arquitetura` e `regras`, `+0.10` para
-`pinned` (`brain-store:1822-1823`). Notas expiradas são filtradas antes do score
-(`brain-store:1798`).
+pontuado `1.0/(60.0 + rank)` (`brain-store:1875,1955,1968`; soma em `:2053`) —
+depois **fator de autoridade multiplicativo**: `1.15` para `arquitetura` e
+`regras`, `1.10` para `pinned`, composto `1.265x` (`brain-store:2060-2066`).
+Não é soma: um boost aditivo de `+0.15` valia mais que o score de **todos** os
+quatro streams somados (`4/61 = 0.0656`), o que fazia a camada vencer a
+relevância (issue #1). O fator escala o que a relevância já produziu: base zero
+continua zero. Em posições de rank, `1.15` compra ~9.1 e `1.265` ~16.8. Notas
+expiradas são filtradas antes do score. Com `--explain`, `authority` é o delta
+efetivo (`score - base`), não a constante de antes.
 
 **O FTS segura a busca sozinho.** Se o Ollama estiver fora, a chamada degrada
 para só texto e **não dá erro** — o campo `explain` não aparece na resposta MCP

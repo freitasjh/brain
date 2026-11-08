@@ -192,11 +192,17 @@ curl -N  --max-time 2 "http://127.0.0.1:$MP/sse"              # 12b text/event-s
 
 ### H4.1 Search / rank
 - [ ] RRF **k=60** (`1.0/(60.0+rank)`) sobre **4 streams** — vec, fts, entity, graph —
-      somados em `brain-store/src/lib.rs:1819`
-- [ ] `truncate(50)` por stream **antes** de fundir (`lib.rs:1717`); `truncate(top_k)`
-      só no fim (`lib.rs:1827`)
-- [ ] Authority: `arquitetura`/`regras` **+0.15**, `pinned` **+0.1**
-      (`lib.rs:1822-1823`), somado **antes** do trunc final
+      somados em `brain-store/src/lib.rs:2053` (por stream: `:1875`, `:1955`, `:1968`)
+- [ ] `truncate(50)` por stream **antes** de fundir (`lib.rs:1953`, FTS `LIMIT 50` em
+      `:1835`); `truncate(top_k)` só no fim (`lib.rs:2070`)
+- [ ] Authority: **fator** multiplicativo, não soma — `arquitetura`/`regras`
+      **1.15**, `pinned` **1.10**, composto `1.265x`, aplicado ao score fundido
+      (`lib.rs:2060-2066`). `explain.authority` é o **delta efetivo**
+      (`score - base`), então `--explain` continua fechando a conta.
+      Efeito medido em posições de rank: `f` compra `(f-1)(r+60)/f` posições —
+      `r=10, f=1.15` → 9.1 posições; `r=20, f=1.265` → 16.8. O aditivo antigo
+      (`+0.15`) valia 9.15x o rank 1 de um stream e 2.3x o teto dos quatro
+      somados (`4/61`), por isso camada vencia relevância (issue #1).
 - [ ] FTS escapa `"*():{}=-/`; filter e assembly são batch, **não** N+1
 - [ ] `expires_at` vence `pinned`; filtro de scope antes do score
 - [ ] Entidades: 243 linhas em produção — o stream **é** exercitado
