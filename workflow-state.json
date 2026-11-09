@@ -3,9 +3,9 @@
   "version": "0.12.0",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B) | ultimo ciclo: migracao OpenCode V1->V2 (plugins/mcp/instalador)",
   "current_feature": "session-handoff-blind",
-  "current_phase": "B3-review-passed",
+  "current_phase": "committed",
   "previous_phase": "committed (authority-boost)",
-  "next_phase": "B4-finalization (HITL: commit)",
+  "next_phase": "F3-F7 (session-end digest, tool-result, sessoes noise in ranking, spool reader, plugin drift)",
   "type": "bugfix",
   "artifacts": {
     "tasks": ".spec/bugs/viewer-html-not-served/TASKS.md",
@@ -79,8 +79,8 @@
       "progress": 100
     }
   ],
-  "phase": "bugfix-B3",
-  "status": "handoff D1+D2+D3 applied; 11 tests + 2 pins; review APPROVED (0 critical, 5 attention + 2 suggestions fixed); 0.12.0 unreleased",
+  "phase": "bugfix-complete",
+  "status": "committed 1b6146e (0.12.0 unreleased) — handoff D1+D2+D3; release build still needed for the IDE plugin",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
@@ -117,7 +117,7 @@
   },
   "harness_status": "passed",
   "harness_detail": "cargo test --workspace 550 passed / 0 failed; clippy --all-targets -D warnings 0; build 0; pytest 124 + 2 known legacy (H1.4); H3 scratch 12+12b on ephemeral ports; production :8321/:8322 untouched; EXPLAIN QUERY PLAN: 2.3 ms worst case (468 sessions)",
-  "last_updated": "2026-11-08T23:36:43Z",
+  "last_updated": "2026-11-09T00:40:14Z",
   "tech_debt": [
     {
       "id": "TD-001",
