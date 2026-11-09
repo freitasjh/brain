@@ -300,6 +300,430 @@ fn e2e_hook_shared_auto_link() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
+// ---------------------------------------------------- session-handoff-blind --
+//
+// The bug was two halves of the same silence: `session-start` injected only
+// `layer=regras`, so a new session never learned where the previous one stopped,
+// and the note the hook writes carried `project_id = NULL` with no link, so it was
+// invisible under `project=` as well. D3 links it, D2 injects it.
+
+/// T5 — the hook's own note belongs to its project, and replaying the day does not
+/// multiply that membership.
+///
+/// **Mutation this fails on:** delete the `note_link_project` call from the hook —
+/// `project notes projp` then returns `[]`, because the note is neither owned
+/// (`project_id` stays `NULL` by design) nor linked, which is the F2 symptom.
+#[test]
+fn e2e_hook_links_the_session_note_to_its_own_project() {
+    let db = db("hooklink");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hooklink", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "projp"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    for id in ["link-1", "link-2"] {
+        let o = hook(&db, &xdg, None, "session-start", "projp", id);
+        assert!(o.status.success(), "the hook must never fail an event: {}", out(&o));
+        assert!(
+            !out(&o).contains("could not link"),
+            "the project exists, so the link must succeed: {}",
+            out(&o)
+        );
+    }
+
+    // Two events, two sections: the second append was not deduplicated.
+    let today = chrono_today();
+    let path = format!("sessoes/projp/{today}");
+    let content = read_note(&db, &path);
+    assert_eq!(
+        content.lines().filter(|l| l.starts_with("## ")).count(),
+        2,
+        "two session-start events must leave two sections:\n{content}"
+    );
+
+    // One membership, and it is the hook's own note. `note_projects` has
+    // `PRIMARY KEY(note_path, project_id)`, so the second event's `INSERT OR IGNORE`
+    // cannot add a second row; what this asserts is that the *first* one exists and
+    // is visible through the project surface the handoff depends on.
+    let o = run(&db, &["project", "notes", "projp"]);
+    assert!(o.status.success(), "{}", out(&o));
+    let listed = out(&o);
+    assert_eq!(
+        listed.matches(&path).count(),
+        1,
+        "the session note must appear exactly once in the project's notes:\n{listed}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+/// T6 — a new session is handed the previous one, and the empty marker does not
+/// contradict it.
+///
+/// The seeded note is dated in the past on purpose: it stands in for "the last
+/// session", so what is asserted is the content of *another* session, not the echo
+/// of this very event in today's note.
+///
+/// The run carries a `--question` deliberately. That is the shape the plugin calls
+/// with (`hooks/opencode/brain-session.js:140`), and it is the only shape in which
+/// the session block can be the **sole** thing injected: with no question, the
+/// project panorama runs instead and would satisfy "something was printed" on its
+/// own. Without this, the `INJECT: (no context found)` assertion below is vacuous —
+/// verified by restoring the old three-term condition, which this test then does not
+/// notice.
+#[test]
+fn e2e_hook_session_start_injects_the_previous_session() {
+    let db = db("hookinject");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hookinject", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "inj"]);
+    assert!(o.status.success(), "{}", out(&o));
+    // A previous session's note: same project prefix, no owner, no link — the
+    // legacy shape, reachable only by the prefix branch.
+    let o = run(&db, &["store", "sessoes", "inj/2020-01-01", "## onde paramos\n\nONDE-PARAMOS: faltou o teste de integração"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    let o = hook_asking(&db, &xdg, "session-start", "inj", "inj-1", "ONDE-PARAMOS");
+    assert!(o.status.success(), "{}", out(&o));
+    let text = out(&o);
+    assert!(
+        text.contains("--- Brain context (sessões) ---"),
+        "the handoff block is missing:\n{text}"
+    );
+    assert!(
+        !text.contains("panorama, sem pergunta"),
+        "with a question there is no panorama, so the session block is the only source:\n{text}"
+    );
+    assert!(
+        text.contains("sessoes/inj/2020-01-01"),
+        "the previous session's note must be named:\n{text}"
+    );
+    assert!(
+        text.contains("ONDE-PARAMOS"),
+        "the note's content must be injected, not just its path:\n{text}"
+    );
+    assert!(
+        !text.contains("INJECT: (no context found)"),
+        "a session was injected, so the empty marker must not also print:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+/// T7 — the budget. A 5 KB session note must not push the rules block out of the
+/// 4000-character append budget the plugin enforces
+/// (`hooks/opencode/brain-session.js:38`): at most 400 characters of it reach the
+/// session, and newlines are flattened so one note stays one line.
+#[test]
+fn e2e_hook_truncates_the_injected_session_tail_to_the_budget() {
+    let db = db("hookbudget");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hookbudget", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "bud"]);
+    assert!(o.status.success(), "{}", out(&o));
+    let big = format!("{}\nFIM-DA-NOTA", "X".repeat(5000));
+    let o = run(&db, &["store", "sessoes", "bud/2020-01-01", &big]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    let o = hook(&db, &xdg, None, "session-start", "bud", "bud-1");
+    assert!(o.status.success(), "{}", out(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(text.contains("sessoes/bud/2020-01-01"), "the note must be injected:\n{text}");
+    assert!(text.contains("FIM-DA-NOTA"), "the *tail* is what is injected, not the head:\n{text}");
+    assert!(
+        text.matches('X').count() <= 400,
+        "at most 400 characters of a note may reach the session; got {}:\n{text}",
+        text.matches('X').count()
+    );
+    assert!(
+        text.chars().count() < 4000,
+        "the whole injection must stay under the plugin's budget; got {}:\n{text}",
+        text.chars().count()
+    );
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("sessoes/bud/2020-01-01")).count(),
+        1,
+        "a flattened note is one line:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+/// T8 — the negative half. With no project the hook skips *before* any injection,
+/// so the session block cannot appear and the output is what it always was.
+///
+/// The seeded note is filed under the working directory's name, so a mutation that
+/// fell back to the directory name — the shape the resolution code deliberately
+/// refuses — would surface a block here instead of passing silently.
+#[test]
+fn e2e_hook_without_a_resolvable_project_injects_no_session_block() {
+    let db = db("hooknoproj");
+    let root = format!("/tmp/brain-cli-noproj-{}", std::process::id());
+    let _ = std::fs::remove_dir_all(&root);
+    let work = format!("{root}/work/brain-cli-noproj-dir");
+    std::fs::create_dir_all(&work).unwrap();
+    let brain_dir = format!("{root}/brain");
+    let xdg = format!("{root}/xdg");
+    let today = chrono_today();
+    let seeded = format!("sessoes/brain-cli-noproj-dir/{today}");
+    let o = run(&db, &["store", "sessoes", &format!("brain-cli-noproj-dir/{today}"), "## sessão anterior"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    let o = Command::new(bin())
+        .current_dir(&work)
+        .arg("--db")
+        .arg(&db)
+        .arg("hook")
+        .arg("--event")
+        .arg("session-start")
+        .arg("--payload")
+        .arg(r#"{"id":"np-1"}"#)
+        .env("BRAIN_OLLAMA_URL", DEAD_OLLAMA)
+        .env("BRAIN_HOOK_EMBED", "0")
+        .env("BRAIN_DIR", &brain_dir)
+        .env("XDG_RUNTIME_DIR", &xdg)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn brain hook");
+    assert!(o.status.success(), "a hook must never fail the IDE: {}", out(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(text.contains("hook skipped"), "with nothing to resolve the event is skipped:\n{text}");
+    assert!(
+        !text.contains("--- Brain context"),
+        "a skipped event must not inject anything:\n{text}"
+    );
+    assert!(
+        !text.contains(&seeded),
+        "no block, and in particular not the note filed under the directory's name:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+
+// ------------------------------------ A1/A2 of the session-handoff-blind review --
+//
+// Two defects in what D1-D3 delivered, both measured on `data/brain.db`:
+//
+//   A1 — the hook writes the day's note *before* it reads `recent_session_notes`, so
+//        the newest row was always today's and slot 1 injected the echo of the event
+//        that was running (`## 16:24 session-start id=...` + payload). For a project
+//        whose `sessoes` layer holds only those logs, both slots were echo: 800
+//        characters of budget and zero handoff.
+//   A2 — D3 links that note to the project, so `project_notes` (owned ∪ linked,
+//        `updated_at DESC`) returned it first and the panorama's `take(5)` printed the
+//        same note the session block prints, and could push the rules out.
+
+/// T9 — the block prefers agent-written sections and demotes a log-only note to one
+/// line, instead of spending 400 characters of budget per echo.
+///
+/// **Mutations this fails on:**
+/// - make the `retain` unconditional (drop every `n.0 == full`, as it was before
+///   `session-handoff-blind` loop 2) → see the sibling test
+///   `e2e_hook_injects_a_curated_section_that_an_agent_appended_to_the_days_note`;
+/// - delete `session_notes.retain(...)` → today's note comes back with
+///   `session-start id=t9-1` (the running event's own dedup key) as the slot-1 tail;
+/// - delete the heading filter in `session_digest` (treat every section as curated) →
+///   the mechanical note is injected as a 400-character tail and `PAYLOAD-ECO`
+///   reappears in stdout;
+/// - drop the `is_clock` positional check and substring-match the event names → the
+///   curated heading below (`## tool-result perdido na fila`) contains `tool-result`,
+///   so it is demoted to a stub and the `Fila de embed` assertion loses its line.
+///   This is why that heading names the event: a heading that mentions no event
+///   classifies the same under both implementations, and the mutation survived.
+#[test]
+fn e2e_hook_session_block_prefers_curated_sections_over_the_event_echo() {
+    let db = db("hookcurated");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hookcurated", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "projx"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    // The mechanical note: nothing but what the hook itself writes. `PAYLOAD-ECO`
+    // stands in for the JSON payload those sections carry.
+    let mechanical = "# Sessão projx 2026-01-01\n\
+                      ## 10:00 session-start id=a\n\nPAYLOAD-ECO anexo do evento\n\
+                      ## 10:05 tool-result demo id=b\n\nPAYLOAD-ECO tambem\n";
+    let o = run(&db, &["store", "sessoes", "projx/2026-01-01", mechanical]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    // The curated note: the shape an agent leaves behind, under a heading the hook
+    // never generates — and one that names an event, so a substring detector is
+    // caught here.
+    let curated = "# Sessão projx 2026-01-02\n## tool-result perdido na fila\nFila de embed com 3 NULL; teste X falhando.";
+    let o = run(&db, &["store", "sessoes", "projx/2026-01-02-onde-paramos", curated]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    let o = hook(&db, &xdg, None, "session-start", "projx", "t9-1");
+    assert!(o.status.success(), "the hook must never fail an event: {}", out(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+
+    // The running event's own note is the newest row; it must not be echoed back.
+    assert!(
+        !text.contains("session-start id=t9-1"),
+        "slot 1 must not be the echo of the event that is running:\n{text}"
+    );
+    assert!(
+        text.contains("--- Brain context (sessões) ---"),
+        "the handoff block is missing:\n{text}"
+    );
+
+    // The curated note is injected as content, not as a stub.
+    assert!(
+        text.contains("Fila de embed com 3 NULL"),
+        "the agent-written section must be injected:\n{text}"
+    );
+
+    // The log-only note is one line: path plus the last generated heading, with no
+    // slice of its payload anywhere in the stdout.
+    let mech_lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("sessoes/projx/2026-01-01"))
+        .collect();
+    assert_eq!(mech_lines.len(), 1, "a log-only note is one line:\n{text}");
+    assert_eq!(
+        mech_lines[0], "sessoes/projx/2026-01-01 ## 10:05 tool-result demo id=b",
+        "the line carries the last generated heading and nothing else:\n{text}"
+    );
+    assert!(
+        !text.contains("PAYLOAD-ECO"),
+        "no payload of a mechanical section may reach the session:\n{text}"
+    );
+
+    // Exactly the two eligible notes, each on its own line.
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("sessoes/projx/")).count(),
+        2,
+        "two session slots, and today's note is not one of them:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+/// A curated section that an agent appended to **today's** note must be injected —
+/// and `LogOnly` is what makes the day's note ineligible, not its path.
+///
+/// The hook writes the day's note before it reads `recent_session_notes`, so the
+/// unconditional `retain(|n| n.0 != full)` (A1's fix) also threw away a note an agent
+/// had curated: the afternoon session lost the morning's "onde paramos" whenever the
+/// agent put it where the hook also writes — a shape `session_digest` was explicitly
+/// built for ("A note named `sessoes/<proj>/<YYYY-MM-DD>` can still hold an agent's
+/// curated section").
+///
+/// **Mutation this fails on:** make the retain unconditional again → `CURADO-DO-DIA`
+/// is missing from the block and the day's note is invisible.
+#[test]
+fn e2e_hook_injects_a_curated_section_that_an_agent_appended_to_the_days_note() {
+    let db = db("hookcuratedtoday");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hookcuratedtoday", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "projx"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    // First event: the hook creates the day's note and prints its real path, so this
+    // test never has to reconstruct the date itself.
+    let o = hook(&db, &xdg, None, "session-start", "projx", "day-1");
+    assert!(o.status.success(), "the hook must never fail an event: {}", out(&o));
+    let first = String::from_utf8_lossy(&o.stdout).into_owned();
+    let note = first
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("note="))
+        .unwrap_or_else(|| panic!("the hook prints note=<layer/path>:\n{first}"))
+        .to_string();
+    let (layer, rest) = note.split_once('/').unwrap_or_else(|| panic!("layer/path expected, got {note}"));
+
+    // The agent curates the day's note. This is the write the unconditional retain
+    // discarded.
+    let curated = "# Sessão projx\n## onde paramos\nCURADO-DO-DIA: fila de embed com 3 NULL.\n";
+    let o = run(&db, &["store", layer, rest, curated]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    // Second event: appended to the same note, after the curated section.
+    let o = hook(&db, &xdg, None, "session-start", "projx", "day-2");
+    assert!(o.status.success(), "the hook must never fail an event: {}", out(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(
+        text.contains("--- Brain context (sessões) ---"),
+        "the day's curated note must open the block:\n{text}"
+    );
+    assert!(
+        text.contains("CURADO-DO-DIA"),
+        "a curated section on the day's own note must be injected:\n{text}"
+    );
+    assert!(
+        !text.contains("id=day-2"),
+        "the echo of the running event must still not be injected:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+/// T10 — the panorama is the project's overview, not its activity feed: session notes
+/// are excluded there and appear only in the session block.
+///
+/// The run carries **no** `--question`, which is the panorama path — the same shape
+/// the measured duplication was observed in (with a question the panorama never runs).
+///
+/// **Mutation this fails on:** delete `.filter(|n| n.layer != "sessoes")` → today's
+/// linked session note takes slot 1 of the panorama, `sessoes/` appears inside the
+/// panorama block, and the note is printed twice.
+#[test]
+fn e2e_hook_panorama_excludes_session_notes() {
+    let db = db("hookpanorama");
+    let xdg = format!("/tmp/brain-cli-xdg-{}-hookpanorama", std::process::id());
+    let _ = std::fs::remove_dir_all(&xdg);
+    let o = run(&db, &["project", "create", "pj2"]);
+    assert!(o.status.success(), "{}", out(&o));
+
+    let o = run(&db, &["store", "regras", "pj2/naming", "## Naming\n\nUse kebab-case.", "--scope", "projetos", "--project", "pj2"]);
+    assert!(o.status.success(), "{}", out(&o));
+    let o = run(&db, &["store", "arquitetura", "pj2/stack", "## Stack\n\nRust + SQLite.", "--scope", "projetos", "--project", "pj2"]);
+    assert!(o.status.success(), "{}", out(&o));
+    for day in ["2026-01-01", "2026-01-02", "2026-01-03"] {
+        let o = run(&db, &["store", "sessoes", &format!("pj2/{day}"), "## onde paramos\n\nlog do dia"]);
+        assert!(o.status.success(), "{}", out(&o));
+    }
+
+    let o = hook(&db, &xdg, None, "session-start", "pj2", "t10-1");
+    assert!(o.status.success(), "the hook must never fail an event: {}", out(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+
+    let header = "--- Brain context (projeto pj2 — panorama, sem pergunta) ---";
+    let start = text.find(header).unwrap_or_else(|| panic!("panorama header missing:\n{text}"));
+    let rest = &text[start + header.len()..];
+    let end = rest.find("\n---").unwrap_or(rest.len());
+    let panorama = &rest[..end];
+
+    assert!(
+        panorama.contains("regras/projetos/pj2/naming"),
+        "the knowledge layers must be in the panorama:\n{text}"
+    );
+    assert!(
+        panorama.contains("arquitetura/projetos/pj2/stack"),
+        "the knowledge layers must be in the panorama:\n{text}"
+    );
+    assert!(
+        !panorama.contains("sessoes/"),
+        "the panorama is an overview, not the activity feed:\n{text}"
+    );
+
+    // The session block still runs, and it is the only place a session note appears.
+    assert!(
+        text.contains("--- Brain context (sessões) ---"),
+        "the handoff block must still run:\n{text}"
+    );
+    // Counted over block lines, not raw substrings: the trailing `hook ok` line names
+    // the note the hook just wrote, which is a session path too.
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("sessoes/pj2/")).count(),
+        2,
+        "each session note is printed once, in the session block only:\n{text}"
+    );
+    cleanup(&db);
+    let _ = std::fs::remove_dir_all(&xdg);
+}
+
+
 // -------------------------------------------------------------- Y-02 --
 //
 // `serve` and `serve-mcp` used to be started on **fixed** ports (18341/18342) and
@@ -724,6 +1148,28 @@ fn hook(db: &str, xdg: &str, ollama: Option<&str>, event: &str, project: &str, i
         cmd.env("BRAIN_OLLAMA_URL", "http://127.0.0.1:1");
     }
     cmd.arg("hook").arg("--event").arg(event).arg("--project").arg(project).arg("--payload").arg(&payload);
+    cmd.output().expect("spawn brain hook")
+}
+
+/// The same hook, plus the user's question — the shape the plugin actually calls in
+/// (`hooks/opencode/brain-session.js:140` passes the prompt it captured). Used where
+/// the test needs the panorama path to stay out of the way.
+fn hook_asking(db: &str, xdg: &str, event: &str, project: &str, id: &str, question: &str) -> std::process::Output {
+    let payload = format!("{{\"id\":\"{id}\",\"tool\":\"demo\"}}");
+    let mut cmd = Command::new(bin());
+    cmd.env("BRAIN_DB_PATH", db)
+        .env("XDG_RUNTIME_DIR", xdg)
+        // A port nobody is listening on: the event must be captured anyway.
+        .env("BRAIN_OLLAMA_URL", "http://127.0.0.1:1");
+    cmd.arg("hook")
+        .arg("--event")
+        .arg(event)
+        .arg("--project")
+        .arg(project)
+        .arg("--question")
+        .arg(question)
+        .arg("--payload")
+        .arg(&payload);
     cmd.output().expect("spawn brain hook")
 }
 

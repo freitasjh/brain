@@ -2,14 +2,14 @@
   "project": "brain",
   "version": "0.12.0",
   "description": "MCP server Rust SQLite-only — FTS5+vector hybrid RRF (Fase A+B) | ultimo ciclo: migracao OpenCode V1->V2 (plugins/mcp/instalador)",
-  "current_feature": "authority-boost-dominates-search",
-  "current_phase": "committed",
-  "previous_phase": "B2-implementation",
-  "next_phase": "C3 debt (truncate(50) + clamp 1,20) when a wide-query case appears",
+  "current_feature": "session-handoff-blind",
+  "current_phase": "B3-review-passed",
+  "previous_phase": "committed (authority-boost)",
+  "next_phase": "B4-finalization (HITL: commit)",
   "type": "bugfix",
   "artifacts": {
     "tasks": ".spec/bugs/viewer-html-not-served/TASKS.md",
-    "bug_tasks": ".spec/bugs/authority-boost-dominates-search/TASKS.md",
+    "bug_tasks": ".spec/bugs/session-handoff-blind/TASKS.md",
     "github_issue": "https://github.com/freitasjh/brain/issues/1"
   },
   "features": [
@@ -79,8 +79,8 @@
       "progress": 100
     }
   ],
-  "phase": "bugfix-complete",
-  "status": "committed d9ba1e3 (0.12.0) — issue #1 stays open for C3 wide-query test; GitHub comment pending manual paste",
+  "phase": "bugfix-B3",
+  "status": "handoff D1+D2+D3 applied; 11 tests + 2 pins; review APPROVED (0 critical, 5 attention + 2 suggestions fixed); 0.12.0 unreleased",
   "spec_name": "brain-rust-sqlite",
   "phases_completed": [
     "core-implementation",
@@ -106,7 +106,7 @@
     "deployed-production-2026-09-26"
   ],
   "tasks_completed": "B1 analysis, B2 fix, B3 review",
-  "test_count": 534,
+  "test_count": 550,
   "test_pass": true,
   "code_review": {
     "last_invoked_at": "2026-11-08T17:14:19Z",
@@ -116,8 +116,8 @@
     "reviewer_notes": "authority boost: additive +0.15/+0.1 (9.15x max single-stream RRF, 2.3x 4-stream ceiling) -> multiplicative 1.15/1.10 (composed 1.265x). Mutation-tested both directions: restoring additive fails T1/T2/T5; removing factor fails T4/T5. 4 attention (2 docs, workflow-state, version bump) + 3 suggestions fixed in same batch."
   },
   "harness_status": "passed",
-  "harness_detail": "cargo test --workspace 534 passed / 0 failed; cargo clippy --workspace --all-targets -- -D warnings 0; cargo build --workspace 0; pytest 124 passed / 2 known legacy (H1.4); H3 scratch 12 steps + 12b on ephemeral ports; production :8321 connection_`PID 1370` untouched",
-  "last_updated": "2026-11-08T22:21:45Z",
+  "harness_detail": "cargo test --workspace 550 passed / 0 failed; clippy --all-targets -D warnings 0; build 0; pytest 124 + 2 known legacy (H1.4); H3 scratch 12+12b on ephemeral ports; production :8321/:8322 untouched; EXPLAIN QUERY PLAN: 2.3 ms worst case (468 sessions)",
+  "last_updated": "2026-11-08T23:36:43Z",
   "tech_debt": [
     {
       "id": "TD-001",

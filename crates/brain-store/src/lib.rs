@@ -1804,6 +1804,89 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// The most recent notes of a project's **session log**, cut at `limit`, each as
+    /// `(path, updated_at, content)`.
+    ///
+    /// `brain hook --event session-start` needs this: the automated session log is
+    /// the one thing an agent does not have to remember to write, so it is the one
+    /// thing a fresh session cannot see. `project_notes` does not find it, and that
+    /// is not an oversight in that method — the hook writes the note with
+    /// `project_id = None` on purpose (the `project_id` argument of
+    /// `note_append_section` at `brain-cli/src/main.rs:1242`, and again for the chunk
+    /// sync at `:1344`), and the only link it created before this fix was the literal
+    /// `sessoes/shared/` prefix (`:1297`). So on the production corpus 470 of 1264
+    /// `sessoes` notes carry `project_id NULL` and belong to no project by either
+    /// route.
+    ///
+    /// Three ways a session note can belong to the project, and they are a union
+    /// because each one alone leaves a real note invisible:
+    ///
+    /// 1. `notes.project_id` — an agent-saved summary under its project.
+    /// 2. `note_projects` — the hook's own link, from D3 of
+    ///    `session-handoff-blind`, or `brain_project_link`.
+    /// 3. **the path prefix** `sessoes/{project}/` — and this is the only branch
+    ///    that reaches the 470 legacy notes. **No backfill**: reachability is a
+    ///    read, and a bulk `UPDATE` over 470 rows (~3501 chunks) to make a read
+    ///    work is a write that can fail halfway.
+    ///
+    /// `substr(path, 1, length(?))` and not `LIKE ?%`: the project name arrives
+    /// from `config.json` or from a directory name and is never sanitised against
+    /// SQL wildcards. `LIKE 'sessoes/mobile_erp/%'` treats `_` as "any one
+    /// character", so it would also pull `sessoes/mobile-erp/...` into
+    /// `mobile_erp`'s handoff — a wrong-project leak with no error to see. `substr`
+    /// compares literal characters. The trailing `/` is the other half of the same
+    /// guard: `sessoes/atlas/` must not match `sessoes/atlas-agenda/...`.
+    ///
+    /// `length(?)` is SQLite's character count for text, which is the unit
+    /// `substr` also counts in, so multibyte project names stay correct.
+    ///
+    /// **A project that has no `projects` row does not lose the prefix branch.** The
+    /// `project_id` is resolved as an `Option` and passed as SQL `NULL`: `n.project_id
+    /// = NULL` is never true and `project_id = NULL` matches no `note_projects` row,
+    /// so branches 1 and 2 go quiet on their own while branch 3 still works. That is
+    /// not a hypothetical: 134 `sessoes` notes in the production corpus sit under 12
+    /// prefixes with no project (`harness-installer`, `app-update`, …), and `brain
+    /// setup` accepts a typed name without creating one
+    /// (`crates/brain-cli/src/setup.rs:697-699`). The early `return Ok(Vec::new())`
+    /// that used to be here — justified by analogy with [`Self::search`], which
+    /// *filters* rather than rejects — made every one of them invisible to a handoff.
+    ///
+    /// Neither an unknown project nor an empty name is an error (RF-04): the caller is
+    /// a hook that must not fail the IDE. They are simply queries that match nothing.
+    ///
+    /// The TTL predicate is copied from [`Self::recent_paths`] so the two cannot
+    /// disagree about which notes are alive. The ordering keeps its
+    /// `updated_at DESC` **plus an `id DESC` tiebreak**, which `recent_paths` does
+    /// not have, because here a tie is reachable and it matters: `updated_at` is
+    /// written by SQLite's `datetime('now')`, one-second resolution, and the hook
+    /// writes two session notes inside the same second whenever the day's note
+    /// rotates to `-N`. Without the tiebreak "newest two" would be whichever order
+    /// the scan happens to produce, so T3 could only pass by luck. `id` is the
+    /// insert order, so it is the right tiebreak for two rows of the same second.
+    ///
+    /// **The mutation this is pinned against** (T1,
+    /// `test_recent_session_notes_reaches_a_null_owner_by_prefix`): delete the
+    /// `substr` branch. A legacy note — no owner, no link — then vanishes from the
+    /// handoff, and only that test notices.
+    pub fn recent_session_notes(&self, project: &str, limit: usize) -> Result<Vec<(String, String, String)>> {
+        let pid: Option<i64> = self.project_get(project)?.map(|p| p.id);
+        let now = Utc::now().to_rfc3339();
+        let prefix = format!("sessoes/{project}/");
+        let mut stmt = self.conn.prepare(
+            "SELECT n.path, n.updated_at, n.content FROM notes n \
+             WHERE n.layer='sessoes' \
+               AND (n.expires_at IS NULL OR n.expires_at > ?1) \
+               AND (n.project_id = ?2 \
+                    OR n.path IN (SELECT note_path FROM note_projects WHERE project_id = ?2) \
+                    OR substr(n.path, 1, length(?3)) = ?3) \
+             ORDER BY n.updated_at DESC, n.id DESC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(params![now, pid, prefix, limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn count_notes(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT count(*) FROM notes", [], |r| r.get(0))?)
     }
@@ -3479,6 +3562,205 @@ mod tests {
         // The limit is honoured, matching `recent`.
         assert_eq!(s.recent_paths(1).unwrap().len(), 1);
         assert_eq!(s.recent_paths(0).unwrap().len(), 0);
+    }
+
+    /// T1 — the branch that reaches the 470 legacy notes.
+    ///
+    /// The note is stored exactly the way the hook stores it: `layer = sessoes`,
+    /// `project_id = NULL`, and no `note_projects` row. `project_notes` cannot see
+    /// it; the prefix branch is the only route. **Mutation this fails on:** delete
+    /// the `OR substr(n.path, 1, length(?3)) = ?3` branch from
+    /// `recent_session_notes` — the vector comes back empty and the assertion below
+    /// is what says so.
+    #[test]
+    fn test_recent_session_notes_reaches_a_null_owner_by_prefix() {
+        let s = test_store();
+        s.project_create("proj-x", "").unwrap();
+        s.note_upsert("sessoes/proj-x/2026-01-01", "sessoes", None, "## onde paramos", None, &[], false, None).unwrap();
+        assert!(s.project_notes("proj-x").unwrap().is_empty(), "the fixture must start invisible to project_notes");
+
+        let got = s.recent_session_notes("proj-x", 5).unwrap();
+        assert_eq!(got.len(), 1, "a NULL-owner session note must be reachable by path prefix, without a backfill");
+        assert_eq!(got[0].0, "sessoes/proj-x/2026-01-01");
+        assert!(got[0].2.contains("onde paramos"), "the whole note body is returned; the caller cuts the tail");
+        assert!(!got[0].1.is_empty(), "updated_at is part of the contract");
+    }
+
+    /// T2 — the prefix must not become a wildcard.
+    ///
+    /// `sessoes/atlas/` may not match `sessoes/atlas-agenda/...`: that is the
+    /// trailing `/`, and the assertion is the only thing that notices if it is
+    /// dropped. `proj-a` / `proj-b` covers the other half — a bare prefix cannot
+    /// leak a sibling project's log either.
+    ///
+    /// No `LIKE` anywhere in the query, deliberately: `mobile_erp` under `LIKE
+    /// 'sessoes/mobile_erp/%'` would also match `mobile-erp`, because `_` is
+    /// "any single character" in SQL patterns and the project name is never
+    /// sanitised.
+    #[test]
+    fn test_recent_session_notes_prefix_does_not_leak_across_projects() {
+        let s = test_store();
+        for p in ["atlas", "atlas-agenda", "proj-a", "proj-b"] {
+            s.project_create(p, "").unwrap();
+        }
+        for path in [
+            "sessoes/atlas/2026-01-01",
+            "sessoes/atlas-agenda/2026-01-02",
+            "sessoes/proj-a/2026-01-03",
+            "sessoes/proj-b/2026-01-04",
+        ] {
+            s.note_upsert(path, "sessoes", None, "## entrada", None, &[], false, None).unwrap();
+        }
+
+        let paths = |p: &str| -> Vec<String> {
+            let mut v: Vec<String> = s.recent_session_notes(p, 10).unwrap().into_iter().map(|(path, _, _)| path).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(paths("atlas"), vec!["sessoes/atlas/2026-01-01"], "`atlas` must not pull `atlas-agenda`");
+        assert_eq!(paths("atlas-agenda"), vec!["sessoes/atlas-agenda/2026-01-02"]);
+        assert_eq!(paths("proj-a"), vec!["sessoes/proj-a/2026-01-03"], "`proj-a` must not see `proj-b`");
+        assert_eq!(paths("proj-b"), vec!["sessoes/proj-b/2026-01-04"]);
+    }
+
+    /// T3 — newest first, expired out, and the limit is real.
+    ///
+    /// The TTL predicate is copied from `recent_paths`; if the copy drifts, a
+    /// session note that was told to expire keeps being injected into every new
+    /// session, which is the opposite of what `expires_at` is for.
+    ///
+    /// `updated_at` is set explicitly, because the order has to be attributable: all
+    /// three inserts land in the same `datetime('now')` second, so an untampered
+    /// fixture is ordered by the `id DESC` tiebreak alone and dropping
+    /// `updated_at DESC` changes nothing. The note with the **lower** id is made the
+    /// newest, so the two orderings disagree and the assertion below can only pass on
+    /// the real one.
+    ///
+    /// **Mutation this fails on:** delete `n.updated_at DESC` from the `ORDER BY` →
+    /// the result is `[b, a]` (id DESC) instead of `[a, b]`.
+    #[test]
+    fn test_recent_session_notes_honours_ttl_and_orders_newest_first() {
+        let s = test_store();
+        s.project_create("proj-t", "").unwrap();
+        for (path, expires) in [
+            ("sessoes/proj-t/a", None),
+            ("sessoes/proj-t/b", None),
+            ("sessoes/proj-t/gone", Some("2000-01-01T00:00:00Z")),
+        ] {
+            s.note_upsert(path, "sessoes", None, "## entrada", None, &[], false, expires).unwrap();
+        }
+        // `a` is inserted first (lower id) and made the newest by timestamp.
+        s.conn
+            .execute("UPDATE notes SET updated_at='2099-01-01T00:00:00Z' WHERE path='sessoes/proj-t/a'", [])
+            .unwrap();
+        s.conn
+            .execute("UPDATE notes SET updated_at='2020-01-01T00:00:00Z' WHERE path='sessoes/proj-t/b'", [])
+            .unwrap();
+
+        let got: Vec<String> = s.recent_session_notes("proj-t", 10).unwrap().into_iter().map(|(p, _, _)| p).collect();
+        assert_eq!(
+            got,
+            vec!["sessoes/proj-t/a".to_string(), "sessoes/proj-t/b".to_string()],
+            "updated_at DESC, and an expired note never appears"
+        );
+        assert_eq!(s.recent_session_notes("proj-t", 1).unwrap().len(), 1, "the limit is the caller's");
+        assert_eq!(s.recent_session_notes("proj-t", 1).unwrap()[0].0, "sessoes/proj-t/a");
+    }
+
+    /// T4 — the link is what turns the handoff note into a *searchable* project
+    /// note, and this is the assertion that ties the write side (D3) to the symptom
+    /// (F2).
+    /// **Mutation this fails on:** remove the `note_link_project` call from the
+    /// hook, or drop the `note_projects` branch from `search`'s project filter —
+    /// `after` is then empty, exactly as `before` is.
+    #[test]
+    fn test_a_session_note_becomes_searchable_in_its_project_after_the_hook_links_it() {
+        let s = test_store();
+        s.project_create("proj-x", "").unwrap();
+        let path = "sessoes/proj-x/2026-01-05";
+        let body = "## decisão sobre o cache de sessão";
+        let nid = s.note_upsert(path, "sessoes", None, body, None, &[], false, None).unwrap();
+        s.chunk_insert(nid, path, "sessoes", None, body, 0, 1, None, &[], None).unwrap();
+
+        // The note matches the query: without this, `before` being empty would only
+        // prove that FTS never matched, and the whole test would be vacuous.
+        let unfiltered = s.search("cache de sessão", None, None, None, None, None, 5, false).unwrap();
+        assert!(unfiltered.iter().any(|r| r.path == path), "the query must match the note when nothing filters it");
+
+        let before = s.search("cache de sessão", None, None, None, Some("proj-x"), None, 5, false).unwrap();
+        assert!(
+            before.iter().all(|r| r.path != path),
+            "before the link the note is invisible under project= — the F2 symptom: {:?}",
+            before.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
+        assert!(s.recent_session_notes("proj-x", 5).unwrap().iter().any(|(p, _, _)| p == path), "the prefix route already reaches it");
+
+        s.note_link_project(path, "proj-x").unwrap();
+        let after = s.search("cache de sessão", None, None, None, Some("proj-x"), None, 5, false).unwrap();
+        assert!(
+            after.iter().any(|r| r.path == path),
+            "after the link the same note must be found by project search: {:?}",
+            after.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T11 — a project that exists only as a name still reaches its notes by prefix.
+    ///
+    /// `brain setup` accepts a typed project name without creating a `projects` row
+    /// (`crates/brain-cli/src/setup.rs:697-699`), and 134 `sessoes` notes in the
+    /// production corpus sit under 12 such prefixes (`harness-installer`,
+    /// `app-update`, …). The `project_id` is therefore resolved as an `Option` and
+    /// passed as SQL `NULL`: the owned and linked branches go quiet by themselves and
+    /// the prefix branch keeps working.
+    ///
+    /// **Mutation this fails on:** restore the early return
+    /// `let Some(proj) = self.project_get(project)? else { return Ok(Vec::new()) };`
+    /// at the top of `recent_session_notes` → `got` is empty.
+    #[test]
+    fn recent_session_notes_rescues_a_prefix_for_a_project_that_was_never_registered() {
+        let s = test_store();
+        assert!(
+            s.project_get("fantasma").unwrap().is_none(),
+            "the fixture must not register the project, or the test proves nothing"
+        );
+        s.note_upsert("sessoes/fantasma/2026-01-01", "sessoes", None, "## onde paramos", None, &[], false, None).unwrap();
+
+        let got = s.recent_session_notes("fantasma", 5).unwrap();
+        assert_eq!(got.len(), 1, "a prefix with no `projects` row must still be reachable");
+        assert_eq!(got[0].0, "sessoes/fantasma/2026-01-01");
+    }
+
+    /// An empty project name is a query that matches nothing — not an error, and not
+    /// every session note on disk (`sessoes//` is not a prefix of `sessoes/x/`).
+    /// The caller is a hook that must not fail the IDE (RF-04).
+    #[test]
+    fn test_recent_session_notes_with_an_empty_project_name_is_empty() {
+        let s = test_store();
+        s.note_upsert("sessoes/ghost/2026-01-01", "sessoes", None, "## x", None, &[], false, None).unwrap();
+        assert!(s.recent_session_notes("", 5).unwrap().is_empty());
+    }
+
+    /// T5's row-count half, at the only level that can see the rows.
+    ///
+    /// The CLI test can prove the membership is *visible* once, but `project_notes`
+    /// de-duplicates by path, so it cannot see a second row. This one counts the
+    /// table. **Mutation:** replace `INSERT OR IGNORE` with `INSERT` in
+    /// `note_link_project` — this fails, and so would the hook, loudly, on the
+    /// second event of every day.
+    #[test]
+    fn test_linking_the_same_session_note_twice_keeps_one_membership() {
+        let s = test_store();
+        let proj = s.project_create("projp", "").unwrap();
+        let path = "sessoes/projp/2026-01-01";
+        s.note_upsert(path, "sessoes", None, "## a", None, &[], false, None).unwrap();
+        s.note_link_project(path, "projp").unwrap();
+        s.note_link_project(path, "projp").unwrap();
+        let rows: i64 = s
+            .conn
+            .query_row("SELECT count(*) FROM note_projects WHERE note_path=?1 AND project_id=?2", params![path, proj.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "linking twice is one membership, not two");
+        assert_eq!(s.project_notes("projp").unwrap().len(), 1, "and the note is listed once");
     }
 
     #[test]
